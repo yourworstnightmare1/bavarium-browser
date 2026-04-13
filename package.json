@@ -1,0 +1,63 @@
+{
+  "name": "bavarium-browser",
+  "version": "1.0.0-b",
+  "bavariumDisplayVersion": "v1.0b",
+  "description": "Unblocked browsing with leading proxies and other features.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "author": "yourworstnightmare1",
+  "license": "ISC",
+  "build": {
+    "appId": "com.bavarium.browser",
+    "productName": "Bavarium Browser",
+    "icon": "build/icon.png",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "**/*",
+      "!release/**",
+      "!**/.DS_Store",
+      {
+        "from": "ultraviolet-app/node_modules",
+        "to": "ultraviolet-app/node_modules",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "scramjet-app/node_modules",
+        "to": "scramjet-app/node_modules",
+        "filter": ["**/*"]
+      }
+    ],
+    "asarUnpack": [
+      "ultraviolet-app/**",
+      "scramjet-app/**"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^41.1.1",
+    "electron-builder": "^25.1.8"
+  }
+}

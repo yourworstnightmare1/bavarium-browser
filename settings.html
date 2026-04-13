@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Settings</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #202124;
+      color: #e8eaed;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      display: flex;
+    }
+    .sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: #292a2d;
+      border-right: 1px solid #3c4043;
+      padding: 20px 0 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      align-self: stretch;
+    }
+    .sidebar-nav {
+      flex: 1;
+    }
+    .sidebar-version {
+      margin: 0;
+      padding: 16px 20px 20px;
+      font-size: 12px;
+      color: #9aa0a6;
+      border-top: 1px solid #3c4043;
+    }
+    .sidebar h1 {
+      margin: 0 20px 20px;
+      font-size: 22px;
+      font-weight: 500;
+    }
+    .nav-item {
+      display: block;
+      padding: 10px 20px;
+      color: #9aa0a6;
+      cursor: pointer;
+      border: none;
+      background: none;
+      width: 100%;
+      text-align: left;
+      font: inherit;
+    }
+    .nav-item:hover {
+      background: rgba(255,255,255,.06);
+      color: #e8eaed;
+    }
+    .nav-item.active {
+      color: #8ab4f8;
+      background: rgba(138, 180, 248, .12);
+      border-inline-start: 3px solid #8ab4f8;
+      padding-inline-start: 17px;
+    }
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px 40px 100px;
+      max-width: 720px;
+    }
+    .section {
+      display: none;
+    }
+    .section.active {
+      display: block;
+    }
+    .section h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      font-weight: 500;
+    }
+    .section-desc {
+      color: #9aa0a6;
+      margin: 0 0 24px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .field {
+      margin-bottom: 20px;
+    }
+    .field label {
+      display: block;
+      color: #bdc1c6;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+    select, input[type="text"], input:not([type="checkbox"]):not([type="button"]):not([type="radio"]):not([type="hidden"]) {
+      background: #292a2d;
+      color: #e8eaed;
+      border: 1px solid #5f6368;
+      border-radius: 4px;
+      padding: 8px 10px;
+      width: 100%;
+      max-width: 400px;
+      font: inherit;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      background: #8ab4f8;
+      color: #202124;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 16px;
+      font: inherit;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .btn:hover { filter: brightness(1.05); }
+    .btn.secondary {
+      background: #3c4043;
+      color: #e8eaed;
+    }
+    .btn.danger {
+      background: #ea4335;
+      color: #fff;
+    }
+    .path-display {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      color: #bdc1c6;
+      word-break: break-all;
+      max-width: 100%;
+    }
+    #historyList, #downloadList {
+      border: 1px solid #3c4043;
+      border-radius: 8px;
+      max-height: 280px;
+      overflow-y: auto;
+      background: #292a2d;
+    }
+    .history-row, .download-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #3c4043;
+      font-size: 13px;
+    }
+    .history-row:last-child, .download-row:last-child { border-bottom: none; }
+    .history-meta { color: #9aa0a6; font-size: 11px; margin-top: 4px; }
+    .history-title { font-weight: 500; color: #e8eaed; }
+    .history-url { color: #8ab4f8; word-break: break-all; font-size: 12px; }
+    .empty-hint {
+      padding: 24px;
+      text-align: center;
+      color: #9aa0a6;
+    }
+    #saveBtn {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1a73e8;
+      color: #fff;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 24px;
+      font: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+      z-index: 100;
+    }
+    #saveBtn:hover { background: #1967d2; }
+    label.checkbox {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      width: fit-content;
+    }
+    label.checkbox input { width: auto; }
+    .port-status {
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 1.4;
+      max-width: 440px;
+    }
+    .port-status.neutral { color: #9aa0a6; }
+    .port-status.ok { color: #81c995; }
+    .port-status.warn { color: #fdd663; }
+    .port-status.bad { color: #f28b82; }
+    .field-hint {
+      margin: 6px 0 0;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #9aa0a6;
+      max-width: 520px;
+    }
+    .icon-select {
+      position: relative;
+      width: 100%;
+      max-width: 400px;
+    }
+    .icon-select-trigger {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      background: #292a2d;
+      color: #e8eaed;
+      border: 1px solid #5f6368;
+      border-radius: 4px;
+      padding: 8px 10px;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .icon-select-trigger:hover {
+      background: #323336;
+    }
+    .icon-select-trigger:focus {
+      outline: 2px solid #8ab4f8;
+      outline-offset: 1px;
+    }
+    .icon-select-trigger img {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      object-fit: contain;
+    }
+    .icon-select-trigger .icon-select-label {
+      flex: 1;
+      min-width: 0;
+    }
+    .icon-select-chevron {
+      flex-shrink: 0;
+      color: #9aa0a6;
+      font-size: 12px;
+      line-height: 1;
+      transition: transform 0.15s ease;
+    }
+    .icon-select.is-open .icon-select-chevron {
+      transform: rotate(180deg);
+    }
+    .icon-select-panel {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% + 4px);
+      z-index: 50;
+      max-height: 280px;
+      overflow-y: auto;
+      background: #292a2d;
+      border: 1px solid #5f6368;
+      border-radius: 4px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+      padding: 4px 0;
+    }
+    .icon-select-panel[hidden] {
+      display: none !important;
+    }
+    .icon-select-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 8px 12px;
+      border: none;
+      background: transparent;
+      color: #e8eaed;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .icon-select-option:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .icon-select-option.is-selected {
+      background: rgba(138, 180, 248, 0.14);
+    }
+    .icon-select-option img {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      object-fit: contain;
+    }
+    .icon-select-option .icon-select-label {
+      flex: 1;
+      min-width: 0;
+    }
+    body.license-only-page .sidebar {
+      display: none;
+    }
+    body.license-only-page main {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 28px 24px 80px;
+    }
+    body.license-only-page #saveBtn {
+      display: none;
+    }
+    .license-prose {
+      color: #bdc1c6;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .license-prose a {
+      color: #8ab4f8;
+    }
+    .license-prose p {
+      margin: 0 0 14px;
+    }
+    .license-bundle-head {
+      margin: 28px 0 10px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #e8eaed;
+    }
+    .license-bundle-head:first-of-type {
+      margin-top: 0;
+    }
+    .license-deps-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin: 0 0 8px;
+    }
+    .license-deps-table th,
+    .license-deps-table td {
+      border: 1px solid #3c4043;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .license-deps-table th {
+      background: #292a2d;
+      color: #bdc1c6;
+      font-weight: 500;
+    }
+    .license-deps-table td.mono {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      color: #bdc1c6;
+    }
+    .license-deps-meta {
+      font-size: 12px;
+      color: #9aa0a6;
+      margin: 0 0 20px;
+      line-height: 1.5;
+    }
+    .license-cross-links {
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid #3c4043;
+    }
+    .license-cross-links a {
+      color: #8ab4f8;
+    }
+  </style>
+</head>
+<body>
+
+  <aside class="sidebar">
+    <h1>Settings</h1>
+    <div class="sidebar-nav">
+      <button type="button" class="nav-item active" data-hash="proxy">Proxy configuration</button>
+      <button type="button" class="nav-item" data-hash="browsing">Browsing/Searching</button>
+      <button type="button" class="nav-item" data-hash="history">History/Privacy</button>
+      <button type="button" class="nav-item" data-hash="downloads">Downloads</button>
+    </div>
+    <p class="sidebar-version" id="appVersionLabel" aria-label="App version">v1.0b</p>
+  </aside>
+
+  <main>
+    <section id="section-proxy" class="section active">
+      <h2>Proxy configuration</h2>
+      <p class="section-desc">Choose how Bavarium connects for browsing: local Ultraviolet or Scramjet.</p>
+
+      <div class="field">
+        <label for="proxyTypeTrigger">Proxy type</label>
+        <div class="icon-select" id="proxyTypeIconSelect" data-icon-select>
+          <input type="hidden" id="proxyType" value="ultraviolet" />
+          <button type="button" class="icon-select-trigger" id="proxyTypeTrigger" aria-haspopup="listbox" aria-expanded="false">
+            <img class="icon-select-trigger-img" src="https://raw.githubusercontent.com/titaniumnetwork-dev/Ultraviolet-Static/main/public/uv.png" width="20" height="20" alt="" decoding="async" />
+            <span class="icon-select-label icon-select-trigger-text">Ultraviolet</span>
+            <span class="icon-select-chevron" aria-hidden="true">▾</span>
+          </button>
+          <div class="icon-select-panel" role="listbox" hidden>
+            <button type="button" class="icon-select-option" role="option" data-value="ultraviolet">
+              <img src="https://raw.githubusercontent.com/titaniumnetwork-dev/Ultraviolet-Static/main/public/uv.png" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Ultraviolet</span>
+            </button>
+            <button type="button" class="icon-select-option" role="option" data-value="scramjet">
+              <img src="https://raw.githubusercontent.com/MercuryWorkshop/scramjet/main/assets/scramjet.png" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Scramjet</span>
+            </button>
+          </div>
+        </div>
+        <p class="field-hint">
+          Scramjet is faster but may not work all the time. Ultraviolet is slower but usually works on most sites. Tab names are not available while the proxy is enabled.
+        </p>
+      </div>
+
+      <div class="field" data-local-proxy-only>
+        <label for="transport">Transport</label>
+        <select id="transport">
+          <option value="epoxy">Epoxy</option>
+          <option value="libcurl">Libcurl</option>
+        </select>
+        <p class="field-hint">
+          Epoxy is recommended and faster than Libcurl. Libcurl is for maximum compatibility if sites you use are breaking or are strict.
+        </p>
+      </div>
+
+      <div class="field" data-local-proxy-only>
+        <label for="wssServer">WSS server (optional)</label>
+        <input id="wssServer" type="text" placeholder="wss://your-server.com" autocomplete="off" />
+        <p class="field-hint">
+          WSS servers provide a persistent, secure connection to the websites you connect through.
+        </p>
+      </div>
+
+      <div class="field" data-local-proxy-only>
+        <label for="uvPort">Ultraviolet port</label>
+        <input id="uvPort" type="text" placeholder="8080" autocomplete="off" />
+        <div id="uvPortStatus" class="port-status neutral" aria-live="polite"></div>
+      </div>
+
+      <div class="field" data-local-proxy-only>
+        <label for="scramjetPort">Scramjet port</label>
+        <input id="scramjetPort" type="text" placeholder="3000" autocomplete="off" />
+        <div id="scramjetPortStatus" class="port-status neutral" aria-live="polite"></div>
+        <p class="field-hint">
+          It is recommended you choose a port above 10000 to avoid conflicts with other commonly used ports. Your choice of port does not affect how proxies perform.
+        </p>
+      </div>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="proxyEnabled" />
+          Enable proxy for browsing
+        </label>
+        <p class="field-hint">
+          Bavarium will use the system network settings instead of your selected proxy. It is not recommended you disable this.
+        </p>
+      </div>
+    </section>
+
+    <section id="section-browsing" class="section">
+      <h2>Browsing/Searching</h2>
+      <p class="section-desc">Default search engine and new tab page.</p>
+
+      <div class="field">
+        <label for="searchEngineTrigger">Search engine</label>
+        <div class="icon-select" id="searchEngineIconSelect" data-icon-select>
+          <input type="hidden" id="searchEngine" value="google" />
+          <button type="button" class="icon-select-trigger" id="searchEngineTrigger" aria-haspopup="listbox" aria-expanded="false">
+            <img class="icon-select-trigger-img" src="https://www.google.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
+            <span class="icon-select-label icon-select-trigger-text">Google</span>
+            <span class="icon-select-chevron" aria-hidden="true">▾</span>
+          </button>
+          <div class="icon-select-panel" role="listbox" hidden>
+            <button type="button" class="icon-select-option" role="option" data-value="google">
+              <img src="https://www.google.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Google</span>
+            </button>
+            <button type="button" class="icon-select-option" role="option" data-value="duckduckgo">
+              <img src="https://duckduckgo.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">DuckDuckGo</span>
+            </button>
+            <button type="button" class="icon-select-option" role="option" data-value="brave">
+              <img src="https://www.google.com/s2/favicons?sz=64&amp;domain=search.brave.com" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Brave Search</span>
+            </button>
+            <button type="button" class="icon-select-option" role="option" data-value="yandex">
+              <img src="https://yandex.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Yandex</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="homepageTrigger">Homepage / new tab</label>
+        <div class="icon-select" id="homepageIconSelect" data-icon-select>
+          <input type="hidden" id="homepage" value="google" />
+          <button type="button" class="icon-select-trigger" id="homepageTrigger" aria-haspopup="listbox" aria-expanded="false">
+            <img class="icon-select-trigger-img" src="https://www.google.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
+            <span class="icon-select-label icon-select-trigger-text">Google</span>
+            <span class="icon-select-chevron" aria-hidden="true">▾</span>
+          </button>
+          <div class="icon-select-panel" role="listbox" hidden>
+            <button type="button" class="icon-select-option" role="option" data-value="google">
+              <img src="https://www.google.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Google</span>
+            </button>
+            <button type="button" class="icon-select-option" role="option" data-value="duckduckgo">
+              <img src="https://duckduckgo.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">DuckDuckGo</span>
+            </button>
+            <button type="button" class="icon-select-option" role="option" data-value="ultraviolet">
+              <img src="https://raw.githubusercontent.com/titaniumnetwork-dev/Ultraviolet-Static/main/public/uv.png" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Ultraviolet (local)</span>
+            </button>
+            <button type="button" class="icon-select-option" role="option" data-value="scramjet">
+              <img src="https://raw.githubusercontent.com/MercuryWorkshop/scramjet/main/assets/scramjet.png" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Scramjet (local)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="section-privacy" class="section">
+      <h2>History/Privacy</h2>
+      <p class="section-desc">Control whether visits are remembered and manage saved history.</p>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="historyEnabled" />
+          Save browsing history
+        </label>
+      </div>
+
+      <div class="field row">
+        <button type="button" class="btn secondary" id="clearHistoryBtn">Clear all history</button>
+      </div>
+
+      <div class="field">
+        <label>Reset browsing data</label>
+        <p class="field-hint">
+          Removes saved browsing history, the download history list, bookmarks, and all site data for this profile
+          (cookies, cache, local storage, service workers, and similar). Your settings on this page are kept.
+          Signed-in sessions on sites will be signed out.
+        </p>
+        <button type="button" class="btn danger" id="clearAllBrowserDataBtn">Delete all browser data and logs</button>
+      </div>
+
+      <div class="field">
+        <label>Recent history</label>
+        <div id="historyList"></div>
+      </div>
+    </section>
+
+    <section id="section-licenses" class="section">
+      <h2>Third-party licenses</h2>
+      <p class="section-desc">
+        Open-source and third-party components shipped with Bavarium. The tables list
+        each component’s direct npm dependencies (from its package.json) and the
+        <code style="font-size:12px;">license</code> field from the installed copy under
+        <code style="font-size:12px;">node_modules</code> when present.
+      </p>
+      <p class="license-deps-meta" id="thirdPartyLicensesMeta"></p>
+      <div id="thirdPartyLicensesMount" class="license-prose"></div>
+      <div class="license-cross-links license-prose">
+        <p>
+          <strong>AGPL proxy stacks:</strong> bundled Ultraviolet and Scramjet apps are
+          covered separately — see
+          <a href="#licenses-ultraviolet">Ultraviolet — license &amp; source</a>
+          and
+          <a href="#licenses-scramjet">Scramjet — license &amp; source</a>.
+        </p>
+      </div>
+    </section>
+
+    <section id="section-downloads" class="section">
+      <h2>Downloads</h2>
+      <p class="section-desc">Choose where files are saved and whether to confirm each download.</p>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="askBeforeDownload" />
+          Ask where to save each file before downloading
+        </label>
+      </div>
+
+      <div class="field">
+        <label>Default download location</label>
+        <p class="path-display" id="downloadPathDisplay"></p>
+        <div class="row" style="margin-top:8px;">
+          <button type="button" class="btn secondary" id="chooseDownloadFolderBtn">Choose folder</button>
+          <button type="button" class="btn secondary" id="resetDownloadFolderBtn">Use system Downloads</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Download manager</label>
+        <div class="row" style="margin-bottom:8px;">
+          <button type="button" class="btn secondary" id="clearDownloadHistoryBtn">Clear download history</button>
+        </div>
+        <div id="downloadList"></div>
+      </div>
+    </section>
+
+    <section id="section-licenses-ultraviolet" class="section">
+      <h2>Ultraviolet — AGPL license &amp; source</h2>
+      <div class="license-prose">
+        <p>
+          <strong>License:</strong> Bavarium bundles AGPL-licensed Ultraviolet-related
+          software. It is provided <em>without warranty</em>. You may convey and modify
+          it under the terms of the GNU Affero General Public License, version 3.
+        </p>
+        <p>
+          <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU AGPL-3.0</a>
+          (reference)
+          · When the local Ultraviolet app is running, the full license text shipped
+          with it is also at
+          <a id="licenseUvPortLink" href="http://127.0.0.1:8080/LICENSE"
+            >http://127.0.0.1:8080/LICENSE</a
+          >
+          (port matches <strong>Proxy configuration</strong>).
+        </p>
+        <p>
+          <strong>Corresponding source</strong> (upstream):
+          <a href="https://github.com/titaniumnetwork-dev/Ultraviolet-App"
+            >Ultraviolet-App</a
+          >,
+          <a href="https://github.com/titaniumnetwork-dev/ultraviolet">ultraviolet</a>.
+          If this program is modified and you interact with it over a network, the
+          operator must offer you the corresponding source for that version (AGPL §13).
+        </p>
+        <p>
+          <a class="btn secondary" href="#" id="licenseUvBackProxy">Open proxy settings</a>
+        </p>
+      </div>
+    </section>
+
+    <section id="section-licenses-scramjet" class="section">
+      <h2>Scramjet — AGPL license &amp; source</h2>
+      <div class="license-prose">
+        <p>
+          <strong>License:</strong> Bavarium bundles AGPL-licensed Scramjet-related
+          software. It is provided <em>without warranty</em>. You may convey and modify
+          it under the terms of the GNU Affero General Public License, version 3.
+        </p>
+        <p>
+          <a href="https://www.gnu.org/licenses/agpl-3.0.html">GNU AGPL-3.0</a>
+          (reference)
+          · When the local Scramjet app is running, the full license text shipped with
+          it is also at
+          <a id="licenseSjPortLink" href="http://127.0.0.1:3000/LICENSE"
+            >http://127.0.0.1:3000/LICENSE</a
+          >
+          (port matches <strong>Proxy configuration</strong>).
+        </p>
+        <p>
+          <strong>Corresponding source</strong> (upstream):
+          <a href="https://github.com/MercuryWorkshop/Scramjet-Demo">Scramjet-Demo</a>,
+          <a href="https://github.com/MercuryWorkshop/scramjet">scramjet</a>.
+          If this program is modified and you interact with it over a network, the
+          operator must offer you the corresponding source for that version (AGPL §13).
+        </p>
+        <p>
+          <a class="btn secondary" href="#" id="licenseSjBackProxy">Open proxy settings</a>
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <button type="button" id="saveBtn">Save</button>
+  <script src="settings.js"></script>
+</body>
+</html>

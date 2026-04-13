@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Bavarium Browser</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+
+    #tabs {
+      display: flex;
+      background: #222;
+      color: white;
+      padding: 5px;
+    }
+
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      margin-right: 5px;
+      background: #444;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tab-favicon {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      object-fit: contain;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.08);
+      pointer-events: none;
+    }
+
+    .tab.tab-dragging {
+      opacity: 0.85;
+    }
+
+    .tab .tab-close {
+      user-select: none;
+    }
+
+    .tab.active {
+      background: #666;
+    }
+    .tab.incognito {
+      border-bottom: 2px solid #5c6bc0;
+    }
+    .tab.incognito.active {
+      background: #4a5076;
+    }
+
+    #findBar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: #f5f5f7;
+      border-bottom: 1px solid #c5c5c7;
+      flex-wrap: wrap;
+    }
+    #findBar #findInput {
+      flex: 1;
+      min-width: 120px;
+      max-width: 320px;
+      padding: 6px 10px;
+      font-size: 13px;
+      border: 1px solid #aaa;
+      border-radius: 6px;
+    }
+    #findStatus {
+      font-size: 12px;
+      color: #555;
+      min-width: 4.5em;
+    }
+    #findBar .find-btn {
+      padding: 4px 10px;
+      font-size: 14px;
+      border: 1px solid #aaa;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+    #findBar .find-btn:hover {
+      background: #eee;
+    }
+
+    body.find-open webview {
+      height: calc(100vh - 154px);
+    }
+
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: #ddd;
+      flex-wrap: wrap;
+    }
+    #urlWrap {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      min-width: 200px;
+      gap: 6px;
+    }
+    #url {
+      flex: 1;
+      min-width: 0;
+      width: auto !important;
+    }
+    #btnAddBookmark {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 1px solid #aaa;
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 17px;
+      line-height: 1;
+      color: #5f6368;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #btnAddBookmark:hover {
+      background: #fff8e1;
+      color: #e65100;
+      border-color: #ffb74d;
+    }
+    .menu-item:hover {
+      background: rgba(255,255,255,.08);
+    }
+
+    .toolbar-icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: #3c4043;
+      cursor: pointer;
+    }
+    .toolbar-icon-btn:hover {
+      background: rgba(0, 0, 0, 0.08);
+    }
+    .toolbar-icon-btn:active {
+      background: rgba(0, 0, 0, 0.12);
+    }
+    .toolbar-icon-btn svg {
+      display: block;
+      flex-shrink: 0;
+    }
+
+    #bookmarkbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px 6px;
+      background: #ececec;
+      border-bottom: 1px solid #c8c8c8;
+      min-height: 34px;
+    }
+    #bookmarkbarItems {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      flex-wrap: nowrap;
+    }
+    .bm-favicon {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      border-radius: 3px;
+      object-fit: contain;
+      background: #f0f0f0;
+    }
+    .bookmark-item {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 220px;
+      padding: 4px 8px;
+      background: #fff;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      color: #1a1a1a;
+    }
+    .bookmark-item:hover {
+      background: #f5f5f5;
+      border-color: #999;
+    }
+    .bookmark-item .bm-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bookmark-item .bm-edit {
+      flex-shrink: 0;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: 12px;
+      opacity: 0.55;
+      line-height: 1;
+    }
+    .bookmark-item .bm-edit:hover {
+      opacity: 1;
+    }
+    #bookmarkModal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      background: rgba(0,0,0,.45);
+      align-items: center;
+      justify-content: center;
+    }
+    #bookmarkModal .dialog {
+      background: #fff;
+      color: #222;
+      padding: 20px 22px;
+      border-radius: 10px;
+      min-width: 380px;
+      max-width: 90vw;
+      box-shadow: 0 12px 40px rgba(0,0,0,.25);
+    }
+    #bookmarkModal .dialog h3 {
+      margin: 0 0 14px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    #bookmarkModal .dialog label {
+      display: block;
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 4px;
+      margin-top: 10px;
+    }
+    #bookmarkModal .dialog input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      font-size: 13px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+    }
+    #bookmarkModal .dialog .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    #bookmarkModal .dialog button {
+      padding: 8px 14px;
+      font-size: 13px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid #bbb;
+      background: #f5f5f5;
+    }
+    #bookmarkModal .dialog button.primary {
+      background: #1a73e8;
+      color: #fff;
+      border-color: #1a73e8;
+    }
+    #bookmarkModal .dialog button.danger {
+      background: #fff;
+      color: #c5221f;
+      border-color: #ddd;
+      margin-right: auto;
+    }
+
+    webview {
+      width: 100%;
+      height: calc(100vh - 118px);
+    }
+  </style>
+</head>
+<body>
+
+<div id="tabs"></div>
+
+<div id="settings" style="display:none; padding:10px; background:#eee;">
+  <h3>Proxy Settings</h3>
+
+  <select id="proxySelect"></select>
+  <button onclick="addProxy()">Add Proxy</button>
+  <button onclick="removeProxy()">Remove Selected</button>
+
+  <br><br>
+
+  <label>
+    <input type="checkbox" id="proxyEnabled">
+    Enable Proxy
+  </label>
+</div>
+
+<div id="controls">
+  <button type="button" class="toolbar-icon-btn" onclick="goBack()" title="Go back to the previous page" aria-label="Go back to the previous page">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+  <button type="button" class="toolbar-icon-btn" onclick="goForward()" title="Go forward to the next page" aria-label="Go forward to the next page">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+  <button type="button" class="toolbar-icon-btn" onclick="refresh()" title="Refresh — reload the current page" aria-label="Refresh — reload the current page">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <polyline points="23 4 23 10 17 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+  <button type="button" class="toolbar-icon-btn" onclick="newTab()" title="New tab — open a blank tab (⌘T / Ctrl+T)" aria-label="New tab — open a blank tab">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+
+  <div id="urlWrap">
+    <input id="url" type="text" placeholder="Search or enter address" title="Type a URL, search terms, or bavarium:// address — Enter to go" autocomplete="off" spellcheck="true" enterkeyhint="go" aria-label="Address and search" />
+    <button type="button" id="btnAddBookmark" title="Bookmark this page — save to the bar below (⌘D / Ctrl+D)" aria-label="Bookmark this page">★</button>
+  </div>
+
+  <button type="button" class="toolbar-icon-btn" onclick="toggleMenu()" title="Menu — settings, proxy, history, downloads, and more" aria-label="Open menu" style="position:relative; z-index:10;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="12" cy="5" r="1.5" fill="currentColor"/>
+      <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+      <circle cx="12" cy="19" r="1.5" fill="currentColor"/>
+    </svg>
+  </button>
+</div>
+
+<div id="findBar" aria-label="Find in page">
+  <input id="findInput" type="text" placeholder="Find in page…" title="Find text on the current page (⌘F / Ctrl+F)" autocomplete="off" spellcheck="false" aria-label="Find in page" />
+  <span id="findStatus"></span>
+  <button type="button" class="find-btn" id="findPrev" title="Previous match (Shift+Enter)">‹</button>
+  <button type="button" class="find-btn" id="findNext" title="Next match (Enter)">›</button>
+  <button type="button" class="find-btn" id="findClose" title="Close find bar and clear highlights (Esc)">✕</button>
+</div>
+
+<div id="bookmarkbar">
+  <div id="bookmarkbarItems"></div>
+</div>
+
+<div id="bookmarkModal">
+  <div class="dialog">
+    <h3 id="bookmarkModalTitle">Bookmark</h3>
+    <label for="bookmarkEditTitle">Name</label>
+    <input type="text" id="bookmarkEditTitle" placeholder="Name" autocomplete="off" />
+    <label for="bookmarkEditUrl">URL</label>
+    <input type="text" id="bookmarkEditUrl" placeholder="https://… or bavarium://…" autocomplete="off" />
+    <div class="actions">
+      <button type="button" class="danger" id="bookmarkBtnRemove" style="display:none;" title="Remove this bookmark" aria-label="Remove bookmark">Remove</button>
+      <button type="button" id="bookmarkBtnCancel" title="Close without saving" aria-label="Cancel">Cancel</button>
+      <button type="button" class="primary" id="bookmarkBtnSave" title="Save bookmark to the bar" aria-label="Save bookmark">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="menu" style="display:none; position:absolute; right:10px; top:50px; min-width:220px; background:#1e1e1e; color:#e8eaed; padding:6px 0; border:1px solid #444; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.45); z-index:1000;">
+  <div class="menu-item" data-bavarium="bavarium://settings" title="Open Settings in a tab" style="padding:10px 16px; cursor:pointer; font-size:14px;">Settings</div>
+  <div class="menu-item" data-bavarium="bavarium://proxy" title="Choose Ultraviolet or Scramjet and ports" style="padding:10px 16px; cursor:pointer; font-size:14px;">Proxy configuration</div>
+  <div class="menu-item" data-bavarium="bavarium://browsing" title="Homepage, search engine, proxy on/off" style="padding:10px 16px; cursor:pointer; font-size:14px;">Browsing/Searching</div>
+  <div class="menu-item" data-bavarium="bavarium://history" title="Browsing history and clear data" style="padding:10px 16px; cursor:pointer; font-size:14px;">History/Privacy</div>
+  <div class="menu-item" data-bavarium="bavarium://downloads" title="Download history and save location" style="padding:10px 16px; cursor:pointer; font-size:14px;">Download manager</div>
+</div>
+
+<div id="views"></div>
+
+<script src="renderer.js"></script>
+
+</body>
+</html>

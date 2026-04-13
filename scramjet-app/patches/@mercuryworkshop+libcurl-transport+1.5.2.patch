@@ -1,0 +1,86 @@
+diff --git a/node_modules/@mercuryworkshop/libcurl-transport/dist/index.js b/node_modules/@mercuryworkshop/libcurl-transport/dist/index.js
+index a15c56b..a778e7b 100644
+--- a/node_modules/@mercuryworkshop/libcurl-transport/dist/index.js
++++ b/node_modules/@mercuryworkshop/libcurl-transport/dist/index.js
+@@ -6418,24 +6418,25 @@ var LibcurlClient = class {
+     if (this.transport)
+       libcurl.transport = this.transport;
+     libcurl.set_websocket(this.wisp);
++    if (!libcurl.ready) {
++      await new Promise((resolve, reject) => {
++        libcurl.events.addEventListener("libcurl_load", () => resolve(), {
++          once: true,
++        });
++        libcurl.events.addEventListener(
++          "libcurl_abort",
++          (event) => reject(event.detail),
++          { once: true }
++        );
++      });
++    }
++    this.ready = true;
++    console.log("running libcurl.js v" + libcurl.version.lib);
+     this.session = new libcurl.HTTPSession({
+       proxy: this.proxy
+     });
+     if (this.connections)
+       this.session.set_connections(...this.connections);
+-    this.ready = libcurl.ready;
+-    if (this.ready) {
+-      console.log("running libcurl.js v" + libcurl.version.lib);
+-      return;
+-    }
+-    ;
+-    await new Promise((resolve, reject) => {
+-      libcurl.onload = () => {
+-        console.log("loaded libcurl.js v" + libcurl.version.lib);
+-        this.ready = true;
+-        resolve(null);
+-      };
+-    });
+   }
+   ready = false;
+   async meta() {
+diff --git a/node_modules/@mercuryworkshop/libcurl-transport/dist/index.mjs b/node_modules/@mercuryworkshop/libcurl-transport/dist/index.mjs
+index 95cb367..6485274 100644
+--- a/node_modules/@mercuryworkshop/libcurl-transport/dist/index.mjs
++++ b/node_modules/@mercuryworkshop/libcurl-transport/dist/index.mjs
+@@ -6398,24 +6398,25 @@ var LibcurlClient = class {
+     if (this.transport)
+       libcurl.transport = this.transport;
+     libcurl.set_websocket(this.wisp);
++    if (!libcurl.ready) {
++      await new Promise((resolve, reject) => {
++        libcurl.events.addEventListener("libcurl_load", () => resolve(), {
++          once: true,
++        });
++        libcurl.events.addEventListener(
++          "libcurl_abort",
++          (event) => reject(event.detail),
++          { once: true }
++        );
++      });
++    }
++    this.ready = true;
++    console.log("running libcurl.js v" + libcurl.version.lib);
+     this.session = new libcurl.HTTPSession({
+       proxy: this.proxy
+     });
+     if (this.connections)
+       this.session.set_connections(...this.connections);
+-    this.ready = libcurl.ready;
+-    if (this.ready) {
+-      console.log("running libcurl.js v" + libcurl.version.lib);
+-      return;
+-    }
+-    ;
+-    await new Promise((resolve, reject) => {
+-      libcurl.onload = () => {
+-        console.log("loaded libcurl.js v" + libcurl.version.lib);
+-        this.ready = true;
+-        resolve(null);
+-      };
+-    });
+   }
+   ready = false;
+   async meta() {
