@@ -46,6 +46,14 @@ From the repository root:
 npm run dist
 ```
 
+On **Windows** (PowerShell 5.1+ or PowerShell 7), you can install dependencies and build Windows and macOS artifacts in one step:
+
+```powershell
+.\scripts\build-bavarium.ps1
+```
+
+Options: `-Platform Windows|Mac|All`, `-SkipInstall`, `-Clean`, `-Force` (skip confirmation). macOS output is **`release/mac-arm64.zip`** (folder `mac-arm64/` with the `.app`, then zipped by the script). No DMG.
+
 Artifacts are written under **`release/`** (see `package.json` and electron-builder configuration).
 
 ## Proxies
