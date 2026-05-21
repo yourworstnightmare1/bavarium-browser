@@ -20,6 +20,16 @@ Bavarium uses leading proxy technologies such as **[Ultraviolet](https://github.
 # Lightweight
 Bavarium has been designed to run on lower-end devices on both Windows and macOS, allowing it to run using minimal system resources whilst still being reliable and fast.
 
+# Advantages over using a standard web proxy
+## Speed
+Bavarium is always faster since it and the proxies are running locally using your network connection, and doesn't rely on external servers or a VPN service to connect to a proxy. Everything is handled on-site.
+
+## Reliability
+Bavarium is much more reliable than standard web proxies as you will never have to worry about the site being blocked/going offline as it is an app, and there is no site to block since proxies are once again handled locally.
+
+## Security
+Bavarium gives you much more control over the sites you visit and your data. I have made sure to allow users to delete their data at any time and have made it easy to fully delete Bavarium without your data being left over.
+
 # Compatibility
 ## macOS
 macOS requires at least **macOS 13 or newer** with **ARM64**.
