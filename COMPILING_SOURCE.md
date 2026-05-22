@@ -46,7 +46,7 @@ From the repository root:
 npm run dist
 ```
 
-On **Windows** (PowerShell 5.1+ or PowerShell 7), you can install dependencies and build Windows and macOS artifacts in one step:
+On **Windows** (PowerShell 5.1+ or PowerShell 7), you can install dependencies and build Windows installers in one step (`-Platform All` builds Windows only; macOS artifacts require a Mac host):
 
 ```powershell
 .\scripts\build-bavarium.ps1

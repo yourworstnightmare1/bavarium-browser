@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Bavarium</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f0f2f5;
+      --surface: #fff;
+      --text: #202124;
+      --muted: #5f6368;
+      --border: #dadce0;
+      --accent-a: #4fc3f7;
+      --accent-b: #26c6a0;
+      --brand-green-deep: #00796b;
+      --brand-green: #00c853;
+      --brand-green-bright: #00e676;
+      --brand-green-light: #69f0ae;
+      --shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+      --tile-hover: rgba(0, 200, 83, 0.14);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #131314;
+        --surface: #1e1f20;
+        --text: #e8eaed;
+        --muted: #9aa0a6;
+        --border: #3c4043;
+        --brand-green-deep: #00e676;
+        --brand-green: #69f0ae;
+        --brand-green-bright: #b9f6ca;
+        --brand-green-light: #ccff90;
+        --shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        --tile-hover: rgba(0, 230, 118, 0.18);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+    .page {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px 88px;
+      width: 100%;
+      max-width: 920px;
+      margin: 0 auto;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin: 0 0 28px;
+      user-select: none;
+    }
+    .brand-logo {
+      width: clamp(52px, 11vw, 76px);
+      height: clamp(52px, 11vw, 76px);
+      border-radius: 18px;
+      flex-shrink: 0;
+      object-fit: contain;
+    }
+    .brand-text {
+      margin: 0;
+      font-family: inherit;
+      font-size: clamp(2.2rem, 7vw, 3.2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      background: linear-gradient(
+        125deg,
+        var(--brand-green-deep) 0%,
+        var(--brand-green) 38%,
+        var(--brand-green-bright) 72%,
+        var(--brand-green-light) 100%
+      );
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+    }
+    .search-wrap {
+      width: min(100%, 560px);
+      position: relative;
+      margin-bottom: 36px;
+    }
+    #searchInput {
+      width: 100%;
+      padding: 14px 18px;
+      font-size: 16px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: var(--shadow);
+      outline: none;
+    }
+    #searchInput:focus {
+      border-color: var(--accent-a);
+      box-shadow: 0 0 0 3px rgba(79, 195, 247, 0.25), var(--shadow);
+    }
+    #suggestList {
+      display: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(100% + 6px);
+      margin: 0;
+      padding: 6px 0;
+      list-style: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      max-height: 280px;
+      overflow-y: auto;
+      z-index: 20;
+    }
+    #suggestList.open { display: block; }
+    #suggestList li {
+      padding: 10px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      color: var(--text);
+    }
+    #suggestList li:hover,
+    #suggestList li.active {
+      background: var(--tile-hover);
+    }
+    .tiles {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+      width: min(100%, 640px);
+    }
+    .tile {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+      padding: 14px 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      min-height: 92px;
+      text-align: center;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .tile:hover {
+      background: var(--tile-hover);
+      border-color: var(--border);
+    }
+    .tile.empty {
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .tile-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      object-fit: contain;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 4px;
+    }
+    .tile.add .tile-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-style: dashed;
+      background: transparent;
+      color: var(--muted);
+    }
+    .tile-label {
+      font-size: 12px;
+      line-height: 1.3;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      word-break: break-word;
+    }
+    .tile-fav-badge {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      font-size: 10px;
+      opacity: 0;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .tile.site { position: relative; }
+    .tile.site.is-favorite:hover .tile-fav-badge { opacity: 1; }
+    .tile-fav-badge:hover { color: var(--accent-a); background: var(--tile-hover); }
+    .footer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      font-size: 12px;
+      color: var(--muted);
+      background: linear-gradient(transparent, var(--bg) 40%);
+      pointer-events: none;
+    }
+    .footer > * { pointer-events: auto; }
+    .footer-version { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    .footer-github {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .footer-github:hover { color: var(--text); }
+    .footer-github img { width: 18px; height: 18px; opacity: 0.9; }
+    #favoriteModal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(0, 0, 0, 0.45);
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    #favoriteModal.open { display: flex; }
+    .dialog {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 22px;
+      width: min(100%, 400px);
+      box-shadow: var(--shadow);
+    }
+    .dialog h2 {
+      margin: 0 0 14px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .dialog label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 10px 0 4px;
+    }
+    .dialog input {
+      width: 100%;
+      padding: 8px 10px;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .dialog-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .dialog-actions button {
+      padding: 8px 14px;
+      font-size: 13px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .dialog-actions button.primary {
+      background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+      border: none;
+      color: #fff;
+    }
+    .dialog-actions button.danger {
+      color: #c5221f;
+      margin-right: auto;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="brand">
+      <img
+        class="brand-logo"
+        src="build/icon.png"
+        width="76"
+        height="76"
+        alt=""
+        decoding="async"
+      />
+      <h1 class="brand-text">Bavarium</h1>
+    </div>
+    <div class="search-wrap">
+      <input
+        id="searchInput"
+        type="search"
+        placeholder="Search or enter address"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Search or enter address"
+        aria-autocomplete="list"
+        aria-controls="suggestList"
+      />
+      <ul id="suggestList" role="listbox" aria-label="Suggestions"></ul>
+    </div>
+    <div id="tileGrid" class="tiles" aria-label="Shortcuts"></div>
+  </main>
+
+  <footer class="footer">
+    <span id="footerVersion" class="footer-version">Bavarium</span>
+    <a id="footerGithub" class="footer-github" href="#" target="_blank" rel="noopener noreferrer">
+      <img id="footerGithubIcon" src="assets/menu-icons/github.png" width="18" height="18" alt="" />
+      <span>GitHub</span>
+    </a>
+  </footer>
+
+  <div id="favoriteModal" role="dialog" aria-modal="true" aria-labelledby="favoriteModalTitle">
+    <div class="dialog">
+      <h2 id="favoriteModalTitle">Add favorite</h2>
+      <label for="favoriteTitle">Name</label>
+      <input id="favoriteTitle" type="text" placeholder="Site name" autocomplete="off" />
+      <label for="favoriteUrl">URL</label>
+      <input id="favoriteUrl" type="text" placeholder="https://example.com" autocomplete="off" />
+      <div class="dialog-actions">
+        <button type="button" class="danger" id="favoriteRemove" style="display:none;">Remove</button>
+        <button type="button" id="favoriteCancel">Cancel</button>
+        <button type="button" class="primary" id="favoriteSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="newtab.js"></script>
+</body>
+</html>

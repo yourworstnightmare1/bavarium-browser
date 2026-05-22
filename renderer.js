@@ -2,12 +2,310 @@ let tabs = [];
 let currentTab = null;
 let tabId = 0;
 
-const { ipcRenderer, webContents } = require("electron");
+const { ipcRenderer, webContents, shell } = require("electron");
+
+const GITHUB_REPO_URL = "https://github.com/yourworstnightmare1/bavarium-browser";
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
 
 let pendingBootstrapTab = null;
+let devtoolsHostWebContentsId = null;
+let devtoolsOpenForTabId = null;
+
+function setAltMenuBarHeld(held) {
+  if (process.platform === "darwin") {
+    return;
+  }
+  ipcRenderer.send("bavarium-alt-menu-visibility", !!held);
+}
+
+function onAltMenuKeyDown(e) {
+  if (e.key === "Alt") {
+    setAltMenuBarHeld(true);
+  }
+}
+
+function onAltMenuKeyUp(e) {
+  if (e.key === "Alt" || !e.altKey) {
+    setAltMenuBarHeld(false);
+  }
+}
+
+const BAVARIUM_LINK_CLICK_PATCH = `(function() {
+  if (window.__bavariumLinkClickPatch) return;
+  window.__bavariumLinkClickPatch = true;
+  document.addEventListener("click", function(e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href^="bavarium:"]') : null;
+    if (!a) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    try {
+      var ipc = require("electron").ipcRenderer;
+      ipc.sendToHost("bavarium-internal-nav", a.getAttribute("href"));
+    } catch (err) {}
+  }, true);
+})();`;
+
+/** Notify shell when proxied inner frame URL/title changes (same-origin to proxy shell). */
+const BAVARIUM_PAGE_META_WATCHER = `(function() {
+  if (window.__bavariumPageMetaWatch) return;
+  window.__bavariumPageMetaWatch = true;
+  function ping() {
+    try {
+      require("electron").ipcRenderer.sendToHost("bavarium-page-meta-changed");
+    } catch (e) {}
+  }
+  function hookHistory(w) {
+    if (!w || !w.history || w.__bavariumHistoryHook) return;
+    try {
+      w.__bavariumHistoryHook = true;
+      var push = w.history.pushState;
+      var replace = w.history.replaceState;
+      if (push) {
+        w.history.pushState = function() {
+          var r = push.apply(this, arguments);
+          ping();
+          return r;
+        };
+      }
+      if (replace) {
+        w.history.replaceState = function() {
+          var r = replace.apply(this, arguments);
+          ping();
+          return r;
+        };
+      }
+      w.addEventListener("popstate", ping);
+      w.addEventListener("hashchange", ping);
+    } catch (e) {}
+  }
+  function hookFrame(f) {
+    if (!f || f.__bavariumMetaHook) return;
+    f.__bavariumMetaHook = true;
+    try {
+      f.addEventListener("load", ping);
+    } catch (e) {}
+    try {
+      var srcObs = new MutationObserver(ping);
+      srcObs.observe(f, { attributes: true, attributeFilter: ["src"] });
+    } catch (e) {}
+    try {
+      var w = f.contentWindow;
+      if (w) hookHistory(w);
+    } catch (e) {}
+    try {
+      var doc = f.contentDocument;
+      if (doc) {
+        var titleEl = doc.querySelector("title");
+        if (titleEl) {
+          var obs = new MutationObserver(ping);
+          obs.observe(titleEl, { childList: true, characterData: true, subtree: true });
+        }
+        hookHistory(doc.defaultView);
+        var innerFrames = doc.querySelectorAll("iframe");
+        for (var i = 0; i < innerFrames.length; i++) hookFrame(innerFrames[i]);
+      }
+    } catch (e) {}
+  }
+  function scan() {
+    hookFrame(document.getElementById("sj-frame"));
+    hookFrame(document.getElementById("uv-frame"));
+  }
+  scan();
+  try {
+    var rootObs = new MutationObserver(scan);
+    rootObs.observe(document.documentElement, { childList: true, subtree: true });
+  } catch (e) {}
+  setInterval(ping, 500);
+})();`;
+
+const guestPageMetaTimers = new Map();
+const guestPageMetaThrottle = new WeakMap();
+
+function injectBavariumLinkClickCapture(wc) {
+  if (!wc || wc.isDestroyed()) return;
+  wc.executeJavaScript(BAVARIUM_LINK_CLICK_PATCH, true).catch(() => {});
+}
+
+function injectPageMetaWatcher(wc) {
+  if (!wc || wc.isDestroyed()) return;
+  wc.executeJavaScript(BAVARIUM_PAGE_META_WATCHER, true).catch(() => {});
+}
+
+function attachWebviewBavariumNavigation(view) {
+  view.addEventListener("will-navigate", (e) => {
+    const url = e.url || "";
+    if (url.startsWith("bavarium://")) {
+      e.preventDefault();
+      handleInternal(url, view);
+    }
+  });
+
+  view.addEventListener("new-window", (e) => {
+    const url = e.url || "";
+    if (url.startsWith("bavarium://")) {
+      e.preventDefault();
+      handleInternal(url, view);
+    }
+  });
+
+  view.addEventListener("ipc-message", (e) => {
+    if (e.channel === "bavarium-internal-nav" && e.args && e.args[0]) {
+      handleInternal(String(e.args[0]), view);
+      return;
+    }
+    if (e.channel === "bavarium-newtab-navigate" && e.args && e.args[0]) {
+      const te = tabEntryForView(view);
+      if (te) {
+        const prev = currentTab;
+        currentTab = te;
+        navigateCurrentTab(String(e.args[0]));
+        if (prev && prev.id !== te.id) switchTab(te.id);
+      }
+      return;
+    }
+    if (e.channel === "bavarium-page-meta-changed") {
+      onGuestPageMetaChanged(view);
+    }
+  });
+}
+
+function onGuestPageMetaChanged(view) {
+  if (guestPageMetaThrottle.get(view)) return;
+  guestPageMetaThrottle.set(view, true);
+  setTimeout(() => guestPageMetaThrottle.delete(view), 120);
+  void refreshGuestTabPageMeta(view);
+}
+
+function stopGuestPageMetaWatcher(tabId) {
+  const timer = guestPageMetaTimers.get(tabId);
+  if (timer) {
+    clearInterval(timer);
+    guestPageMetaTimers.delete(tabId);
+  }
+}
+
+function startGuestPageMetaWatcher(te) {
+  if (!te || !te.view || te.incognito) return;
+  stopGuestPageMetaWatcher(te.id);
+  if (!viewLooksLikeProxyShell(te.view)) return;
+  const timer = setInterval(() => {
+    void refreshGuestTabPageMeta(te.view);
+  }, 1200);
+  guestPageMetaTimers.set(te.id, timer);
+}
+
+/** Canonical https URL for a remote site (rejects partial hostnames while typing). */
+function normalizeRemoteUrl(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  const t = raw.trim();
+  if (!t || /^javascript:/i.test(t) || /^data:/i.test(t)) return null;
+  try {
+    const u = new URL(t);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    const host = u.hostname.toLowerCase();
+    if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1") {
+      return null;
+    }
+    if (!host.includes(".")) return null;
+    return u.href;
+  } catch (_) {}
+  try {
+    const u = new URL(`https://${t}`);
+    const host = u.hostname.toLowerCase();
+    if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1") {
+      return null;
+    }
+    if (!host.includes(".")) return null;
+    return u.href;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Real page URL/title from a proxy shell location (`localhost/?url=…`). */
+function guestPageMetaFromShellUrl(shellUrl) {
+  try {
+    const u = new URL(shellUrl);
+    if (
+      (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") ||
+      !u.searchParams.has("url")
+    ) {
+      return null;
+    }
+    const inner = decodeURIComponent(u.searchParams.get("url"));
+    const innerHref = normalizeRemoteUrl(inner);
+    if (!innerHref) return null;
+    let origin = "";
+    let title = "";
+    try {
+      const innerU = new URL(innerHref);
+      origin = innerU.origin;
+      title = innerU.hostname;
+    } catch (_) {}
+    return { url: innerHref, title, origin, favicon: "" };
+  } catch (_) {
+    return null;
+  }
+}
+
+function primeTabGuestPageFromDestination(te, destinationUrl) {
+  if (!te) return;
+  const canonical = normalizeRemoteUrl(destinationUrl);
+  if (!canonical) return;
+  let title = "";
+  let origin = "";
+  try {
+    const u = new URL(canonical);
+    title = u.hostname;
+    origin = u.origin;
+  } catch (_) {}
+  te.guestPage = { url: canonical, title, origin, favicon: "" };
+  te.fullTitle = title;
+  const titleEl = tabTitleElement(te);
+  if (titleEl && te.view) {
+    applyTabStripLabel(te.view, titleEl, te.incognito, canonical, title, false);
+  }
+  if (te.faviconImg && te.view) {
+    setTabFaviconImg(te.faviconImg, te.view, canonical, null);
+  }
+  refreshTabTooltip(te);
+  updateUrlBarForTab(te);
+}
+
+function updateUrlBarForTab(te) {
+  if (!te || !currentTab || currentTab.id !== te.id) return;
+  const urlInput = document.getElementById("url");
+  if (!urlInput) return;
+  const canonical = normalizeRemoteUrl(te.guestPage?.url || "");
+  if (canonical) {
+    urlInput.value = canonical;
+    return;
+  }
+  if (te.view && viewLooksLikeProxyShell(te.view)) {
+    return;
+  }
+  try {
+    const cleaned = cleanUrl(webviewDisplayUrl(te.view));
+    if (
+      cleaned.includes("localhost") ||
+      cleaned.startsWith("http://127.0.0.1")
+    ) {
+      return;
+    }
+    urlInput.value = cleaned;
+  } catch (_) {}
+}
+
+function attachHoldAltMenuListeners(target) {
+  if (!target || target.__bavariumAltMenuListeners) {
+    return;
+  }
+  target.__bavariumAltMenuListeners = true;
+  target.addEventListener("keydown", onAltMenuKeyDown, true);
+  target.addEventListener("keyup", onAltMenuKeyUp, true);
+}
 
 function getAppIconFileUrlForTab() {
   try {
@@ -119,6 +417,109 @@ function notifyOpposingProxyHomepageBlocked(settings) {
   );
 }
 
+function activeProxyPort(settings) {
+  if (!settings || settings.proxyEnabled === false) return null;
+  if (settings.proxyType !== "ultraviolet" && settings.proxyType !== "scramjet") {
+    return null;
+  }
+  return parseInt(
+    String(
+      settings.proxyType === "scramjet"
+        ? settings.scramjetPort || 3000
+        : settings.uvPort || 8080
+    ),
+    10
+  );
+}
+
+/** Tab still points at the other proxy's localhost port after a proxy switch. */
+function isStaleProxyTabUrl(rawUrl, settings) {
+  if (!rawUrl || typeof rawUrl !== "string") return false;
+  if (rawUrl.startsWith("bavarium://") || rawUrl.includes("settings.html")) {
+    return false;
+  }
+  if (settings.proxyEnabled === false) return false;
+  const loc = parseLocalhostPort(rawUrl);
+  if (!loc) return false;
+  const active = activeProxyPort(settings);
+  if (active === null) return false;
+  return loc.port !== active;
+}
+
+function resolvedTargetUrlForStaleProxyTab(view, te) {
+  const fromGuest = normalizeRemoteUrl(te?.guestPage?.url || "");
+  if (fromGuest) return fromGuest;
+  const raw = webviewDisplayUrl(view);
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.searchParams.has("url")) {
+      const inner = normalizeRemoteUrl(decodeURIComponent(u.searchParams.get("url")));
+      if (inner) return inner;
+    }
+  } catch (_) {}
+  return normalizeRemoteUrl(cleanUrl(raw));
+}
+
+function remappedUrlForStaleProxyTab(view, te, settings) {
+  if (!view || !settings || settings.proxyEnabled === false) return null;
+  const raw = webviewDisplayUrl(view);
+  if (!raw || !isStaleProxyTabUrl(raw, settings)) return null;
+
+  const target = resolvedTargetUrlForStaleProxyTab(view, te);
+  if (target) return wrapUrlForProxyIfNeeded(target, settings);
+
+  if (parseLocalhostPort(raw)) return localProxyBaseUrl(settings);
+  return null;
+}
+
+/**
+ * Reload a tab that still targets the previous proxy's localhost port.
+ * @returns {boolean} true if the webview was remapped and reloaded
+ */
+function refreshStaleProxyTabIfNeeded(te) {
+  if (!te?.view) return false;
+  const settings = getSettings();
+  const newSrc = remappedUrlForStaleProxyTab(te.view, te, settings);
+  if (!newSrc) return false;
+
+  let current = "";
+  try {
+    current = webviewDisplayUrl(te.view);
+  } catch (_) {}
+  if (current === newSrc) return false;
+
+  te.guestPage = null;
+  te.fullTitle = "";
+  try {
+    te.view.src = newSrc;
+  } catch (_) {
+    return false;
+  }
+
+  if (currentTab && currentTab.id === te.id) {
+    try {
+      const u = new URL(newSrc);
+      const urlInput = document.getElementById("url");
+      if (urlInput && u.searchParams.has("url")) {
+        urlInput.value = decodeURIComponent(u.searchParams.get("url"));
+      } else {
+        updateUrlBarForTab(te);
+      }
+    } catch (_) {
+      updateUrlBarForTab(te);
+    }
+  }
+
+  const titleEl = tabTitleElement(te);
+  if (titleEl) {
+    applyTabStripLabel(te.view, titleEl, te.incognito, null, null, false);
+  }
+  refreshTabTooltip(te);
+  scheduleGuestTabPageMetaRefresh(te.view);
+  return true;
+}
+
 function isBavariumNewTabUrl(url) {
   if (!url || typeof url !== "string") return false;
   try {
@@ -145,10 +546,134 @@ function viewIsIncognito(view) {
   return !!(te && te.incognito);
 }
 
+const PROXY_LANDING_TITLE_RE =
+  /^(scramjet(\s*\|\s*mw)?|ultraviolet(\s*\|\s*sophisticated web proxy)?)$/i;
+
+function isProxyLandingTitle(title) {
+  if (!title || typeof title !== "string") return false;
+  return PROXY_LANDING_TITLE_RE.test(title.trim());
+}
+
+function viewLooksLikeProxyShell(view) {
+  const s = getSettings();
+  if (s.proxyEnabled === false || !view) return false;
+  try {
+    const raw = view.getURL ? view.getURL() : view.src || "";
+    const u = new URL(raw);
+    if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") return false;
+    const port = parseInt(u.port || "80", 10);
+    const expected = parseInt(
+      String(
+        s.proxyType === "scramjet"
+          ? s.scramjetPort || 3000
+          : s.uvPort || 8080
+      ),
+      10
+    );
+    return port === expected;
+  } catch {
+    return false;
+  }
+}
+
+function tabTitleElement(te) {
+  if (!te || !te.tab) return null;
+  return te.tab.querySelector("span:not(.tab-close)");
+}
+
+function applyGuestPageToTab(te, page) {
+  if (!te || !page) return;
+  let url = page.url && String(page.url).trim() ? String(page.url).trim() : "";
+  const normalizedUrl = normalizeRemoteUrl(url);
+  if (normalizedUrl) {
+    url = normalizedUrl;
+  } else if (te.guestPage && te.guestPage.url) {
+    url = te.guestPage.url;
+  } else {
+    url = "";
+  }
+
+  let title =
+    page.title && String(page.title).trim() ? String(page.title).trim() : "";
+  if (title && isProxyLandingTitle(title)) title = "";
+  if (!title && url) {
+    try {
+      title = new URL(url).hostname;
+    } catch (_) {
+      title = "";
+    }
+  }
+  if (!url && !title) return;
+
+  const prev = te.guestPage;
+  const urlSame = prev && prev.url === url;
+  const titleSame = prev && prev.title === title;
+  if (urlSame && titleSame) return;
+
+  let origin = page.origin || "";
+  if (!origin && url) {
+    try {
+      origin = new URL(url).origin;
+    } catch (_) {}
+  } else if (!origin && prev && prev.origin) {
+    origin = prev.origin;
+  }
+
+  te.guestPage = {
+    url,
+    title,
+    origin,
+    favicon:
+      page.favicon ||
+      (prev && prev.favicon) ||
+      "",
+  };
+  if (title) te.fullTitle = title;
+
+  const titleEl = tabTitleElement(te);
+  if (titleEl && te.view) {
+    applyTabStripLabel(
+      te.view,
+      titleEl,
+      te.incognito,
+      url || null,
+      title || null,
+      false
+    );
+  }
+  if (te.faviconImg && te.view) {
+    const favList =
+      te.guestPage.favicon && /^https?:/i.test(te.guestPage.favicon)
+        ? [te.guestPage.favicon]
+        : null;
+    setTabFaviconImg(te.faviconImg, te.view, url || null, favList);
+  }
+  refreshTabTooltip(te);
+  updateUrlBarForTab(te);
+}
+
+function scheduleGuestTabPageMetaRefresh(view) {
+  const te = tabEntryForView(view);
+  void refreshGuestTabPageMeta(view);
+  setTimeout(() => void refreshGuestTabPageMeta(view), 400);
+  setTimeout(() => void refreshGuestTabPageMeta(view), 1200);
+  if (te) startGuestPageMetaWatcher(te);
+}
+
 /** Native tooltip on the tab strip: full page title, incognito explanation. */
 function refreshTabTooltip(te) {
   if (!te || !te.tab) return;
-  let pageName = (te.fullTitle && te.fullTitle.trim()) || "";
+  let pageName =
+    (te.guestPage && te.guestPage.title && te.guestPage.title.trim()) ||
+    (te.fullTitle && te.fullTitle.trim()) ||
+    "";
+  if (!pageName && te.guestPage && te.guestPage.url) {
+    try {
+      pageName = new URL(te.guestPage.url).hostname;
+    } catch (_) {
+      pageName = te.guestPage.url;
+    }
+  }
   if (!pageName) {
     try {
       if (te.view && te.view.getURL) {
@@ -174,7 +699,21 @@ const TAB_LABEL_MAX = 22;
 function setTabFaviconImg(faviconImg, view, navUrl, faviconUrlList) {
   if (!faviconImg) return;
 
+  const te = tabEntryForView(view);
+  if (
+    (!faviconUrlList || !faviconUrlList.length) &&
+    te &&
+    te.guestPage &&
+    te.guestPage.favicon &&
+    /^https?:/i.test(te.guestPage.favicon)
+  ) {
+    faviconUrlList = [te.guestPage.favicon];
+  }
+
   let u = navUrl;
+  if ((u == null || u === "") && te && te.guestPage && te.guestPage.url) {
+    u = te.guestPage.url;
+  }
   if ((u == null || u === "") && view && view.getURL) {
     try {
       u = view.getURL();
@@ -247,23 +786,53 @@ function applyTabStripLabel(
   preferredTitle,
   preferExistingTitle
 ) {
+  const te = tabEntryForView(view);
   let label = (preferredTitle && String(preferredTitle).trim()) || "";
+  if (label && viewLooksLikeProxyShell(view) && isProxyLandingTitle(label)) {
+    label = "";
+  }
+
+  if (!label && te && te.guestPage && te.guestPage.title) {
+    label = te.guestPage.title.trim();
+  }
 
   if (!label && preferExistingTitle) {
     try {
       if (view && view.getTitle) label = (view.getTitle() || "").trim();
     } catch (_) {}
+    if (label && viewLooksLikeProxyShell(view) && isProxyLandingTitle(label)) {
+      label = "";
+    }
   }
 
   if (!label && navUrl != null && navUrl !== "") {
     const c = cleanUrl(navUrl);
-    label = (c && c.trim()) || navUrl;
+    if (c && !c.includes("localhost") && !c.startsWith("127.0.0.1")) {
+      label = (c && c.trim()) || navUrl;
+    } else if (te && te.guestPage && te.guestPage.url) {
+      try {
+        label = new URL(te.guestPage.url).hostname;
+      } catch (_) {
+        label = te.guestPage.url;
+      }
+    }
   }
 
   if (!label) {
     try {
       if (view && view.getTitle) label = (view.getTitle() || "").trim();
     } catch (_) {}
+    if (label && viewLooksLikeProxyShell(view) && isProxyLandingTitle(label)) {
+      label = "";
+    }
+  }
+
+  if (!label && te && te.guestPage && te.guestPage.url) {
+    try {
+      label = new URL(te.guestPage.url).hostname;
+    } catch (_) {
+      label = te.guestPage.url;
+    }
   }
 
   if (!label) {
@@ -273,7 +842,23 @@ function applyTabStripLabel(
     } catch (_) {}
     if (url) {
       const c = cleanUrl(url);
-      label = (c && c.trim()) || url;
+      if (c && !c.includes("localhost")) {
+        label = (c && c.trim()) || url;
+      }
+    }
+  }
+
+  if (label && viewLooksLikeProxyShell(view) && isProxyLandingTitle(label)) {
+    label = "";
+  }
+  if (!label && te && te.guestPage && te.guestPage.title) {
+    label = te.guestPage.title.trim();
+  }
+  if (!label && te && te.guestPage && te.guestPage.url) {
+    try {
+      label = new URL(te.guestPage.url).hostname;
+    } catch (_) {
+      label = te.guestPage.url;
     }
   }
 
@@ -290,11 +875,12 @@ function newTab(url = null, options = {}) {
   const settings = getSettings();
 
   if (url && isBavariumNewTabUrl(url)) {
-    url = null;
-  }
-
-  if (!url) {
+    /* keep bavarium://newtab — loaded via handleInternal */
+  } else if (!url) {
     switch (settings.homepage) {
+      case "bavarium":
+        url = "bavarium://newtab";
+        break;
       case "duckduckgo":
         url = "https://duckduckgo.com";
         break;
@@ -355,6 +941,9 @@ function newTab(url = null, options = {}) {
   document.getElementById("tabs").appendChild(tab);
 
   const view = document.createElement("webview");
+  view.className = "tab-webview";
+  attachHoldAltMenuListeners(view);
+  attachWebviewBavariumNavigation(view);
   view.setAttribute("partition", incognito ? "incognito" : "persist:bavarium");
   view.setAttribute(
     "webpreferences",
@@ -365,6 +954,8 @@ function newTab(url = null, options = {}) {
   view.addEventListener("dom-ready", () => {
     try {
       const id = view.getWebContentsId();
+      const te0 = tabEntryForView(view);
+      if (te0) te0.guestWebContentsId = id;
       const wc = webContents.fromId(id);
       if (!wc || wc.isDestroyed()) return;
       if (wc.__bavariumInternalNavHook) return;
@@ -379,34 +970,36 @@ function newTab(url = null, options = {}) {
           handleInternal(navUrl, view);
         }
       });
-      if (typeof wc.setWindowOpenHandler === "function") {
-        wc.setWindowOpenHandler((details) => {
-          const u = details.url || "";
-          if (u.startsWith("bavarium://")) {
-            handleInternal(u, view);
-            return { action: "deny" };
-          }
-          return { action: "allow" };
-        });
-      }
+      injectBavariumLinkClickCapture(wc);
+      injectPageMetaWatcher(wc);
+      void injectFrameCapOnWebview(view);
+      scheduleGuestTabPageMetaRefresh(view);
     } catch (_) {}
   });
 
   view.addEventListener("page-favicon-updated", (e) => {
     const te0 = tabEntryForView(view);
-    if (te0 && te0.faviconImg) {
-      const urls = e.favicons && e.favicons.length ? e.favicons : null;
-      setTabFaviconImg(te0.faviconImg, view, null, urls);
+    if (!te0 || !te0.faviconImg) return;
+    if (viewLooksLikeProxyShell(view)) {
+      scheduleGuestTabPageMetaRefresh(view);
+      return;
     }
+    const urls = e.favicons && e.favicons.length ? e.favicons : null;
+    setTabFaviconImg(te0.faviconImg, view, null, urls);
   });
 
   view.addEventListener("page-title-updated", (e) => {
     const te0 = tabEntryForView(view);
+    if (viewLooksLikeProxyShell(view)) {
+      scheduleGuestTabPageMetaRefresh(view);
+      return;
+    }
     if (te0) {
       te0.fullTitle = e.title || "";
       refreshTabTooltip(te0);
     }
     applyTabStripLabel(view, title, incognito, null, e.title, false);
+    if (te0) updateUrlBarForTab(te0);
     if (viewIsIncognito(view)) return;
     const s = getSettings();
     if (s.historyEnabled === false) return;
@@ -418,38 +1011,88 @@ function newTab(url = null, options = {}) {
   view.addEventListener("did-navigate", (e) => {
     const te0 = tabEntryForView(view);
     if (te0) {
-      te0.fullTitle = "";
+      if (viewLooksLikeProxyShell(view)) {
+        const meta = guestPageMetaFromShellUrl(e.url);
+        if (meta) {
+          te0.guestPage = meta;
+          te0.fullTitle = meta.title || "";
+        } else {
+          te0.fullTitle = "";
+        }
+      } else {
+        te0.guestPage = null;
+      }
       refreshTabTooltip(te0);
     }
     if (te0 && te0.faviconImg) {
-      setTabFaviconImg(te0.faviconImg, view, e.url, null);
+      setTabFaviconImg(
+        te0.faviconImg,
+        view,
+        te0.guestPage?.url || e.url,
+        null
+      );
     }
-    applyTabStripLabel(view, title, incognito, e.url, null, false);
-    if (currentTab && currentTab.view === view) {
-      document.getElementById("url").value = cleanUrl(e.url);
-    }
+    applyTabStripLabel(
+      view,
+      title,
+      incognito,
+      te0?.guestPage?.url || null,
+      te0?.guestPage?.title || null,
+      false
+    );
+    if (te0) updateUrlBarForTab(te0);
     appendHistoryForNavigation(view, e.url);
+    scheduleGuestTabPageMetaRefresh(view);
   });
 
   view.addEventListener("did-navigate-in-page", (e) => {
     const te0 = tabEntryForView(view);
-    if (te0) refreshTabTooltip(te0);
+    if (te0 && viewLooksLikeProxyShell(view)) {
+      const meta = guestPageMetaFromShellUrl(e.url);
+      if (meta) {
+        te0.guestPage = meta;
+        te0.fullTitle = meta.title || "";
+      }
+      refreshTabTooltip(te0);
+    } else if (te0) {
+      refreshTabTooltip(te0);
+    }
     if (te0 && te0.faviconImg) {
-      setTabFaviconImg(te0.faviconImg, view, e.url, null);
+      setTabFaviconImg(
+        te0.faviconImg,
+        view,
+        te0.guestPage?.url || e.url,
+        null
+      );
     }
-    applyTabStripLabel(view, title, incognito, e.url, null, true);
-    if (currentTab && currentTab.view === view) {
-      document.getElementById("url").value = cleanUrl(e.url);
-    }
+    applyTabStripLabel(
+      view,
+      title,
+      incognito,
+      te0?.guestPage?.url || null,
+      te0?.guestPage?.title || null,
+      true
+    );
+    if (te0) updateUrlBarForTab(te0);
     appendHistoryForNavigation(view, e.url);
+    scheduleGuestTabPageMetaRefresh(view);
   });
 
   view.addEventListener("did-finish-load", () => {
     const te0 = tabEntryForView(view);
+    try {
+      const wcId = view.getWebContentsId();
+      const wc = webContents.fromId(wcId);
+      if (wc) injectPageMetaWatcher(wc);
+    } catch (_) {}
     let t = "";
     try {
       if (view.getTitle) t = (view.getTitle() || "").trim();
     } catch (_) {}
+    if (viewLooksLikeProxyShell(view)) {
+      scheduleGuestTabPageMetaRefresh(view);
+      return;
+    }
     if (t) {
       if (te0) {
         te0.fullTitle = t;
@@ -463,6 +1106,8 @@ function newTab(url = null, options = {}) {
       } catch (_) {}
       applyTabStripLabel(view, title, incognito, u || null, null, false);
     }
+    if (te0) updateUrlBarForTab(te0);
+    scheduleGuestTabPageMetaRefresh(view);
   });
 
   view.addEventListener("found-in-page", (e) => {
@@ -481,6 +1126,7 @@ function newTab(url = null, options = {}) {
     view,
     incognito,
     fullTitle: "",
+    guestPage: null,
     faviconImg,
   };
   tabs.push(tabEntry);
@@ -568,9 +1214,44 @@ function switchTab(id) {
   selected.tab.classList.add("active");
 
   currentTab = selected;
-  document.getElementById("url").value = cleanUrl(
-    webviewDisplayUrl(selected.view)
-  );
+  tabs.forEach((t) => stopGuestPageMetaWatcher(t.id));
+  refreshStaleProxyTabIfNeeded(selected);
+  startGuestPageMetaWatcher(selected);
+  updateUrlBarForTab(selected);
+  scheduleGuestTabPageMetaRefresh(selected.view);
+
+  if (document.body.classList.contains("devtools-open") && devtoolsOpenForTabId !== id) {
+    attachDevToolsToTab(selected);
+  }
+  tabFpsPollSeq++;
+  lastTabFps = null;
+  perfTabPollTick = 5;
+  if (perfGraphRafId && perfFpsSamples.length > 8) {
+    perfFpsSamples.splice(0, perfFpsSamples.length - 8);
+  }
+  void refreshTabFpsAfterSwitch(selected);
+}
+
+async function refreshTabFpsAfterSwitch(te) {
+  const seq = tabFpsPollSeq;
+  if (!te || !te.view) return;
+  await injectFrameCapOnWebview(te.view);
+  if (seq !== tabFpsPollSeq) return;
+  const id = await guestWebContentsIdForTab(te);
+  if (!id || seq !== tabFpsPollSeq) return;
+  try {
+    await ipcRenderer.invoke("bavarium-reset-tab-fps-poll", {
+      webContentsId: id,
+    });
+  } catch (_) {}
+  if (seq !== tabFpsPollSeq) return;
+  scheduleTabFpsPoll(seq);
+  setTimeout(() => {
+    if (seq === tabFpsPollSeq) scheduleTabFpsPoll(seq);
+  }, 120);
+  setTimeout(() => {
+    if (seq === tabFpsPollSeq) scheduleTabFpsPoll(seq);
+  }, 350);
 }
 
 function closeTab(id) {
@@ -578,6 +1259,10 @@ function closeTab(id) {
   if (index === -1) return;
 
   const tab = tabs[index];
+  stopGuestPageMetaWatcher(tab.id);
+  if (tab.id === devtoolsOpenForTabId) {
+    closeEmbeddedDevTools();
+  }
   tab.view.remove();
   tab.tab.remove();
 
@@ -816,20 +1501,26 @@ function getSettings() {
   const settings = JSON.parse(localStorage.getItem("settings") || "{}");
 
   if (settings.homepage === "frogies") settings.homepage = "google";
-  if (!settings.homepage) settings.homepage = "google";
+  if (!settings.homepage) settings.homepage = "bavarium";
   if (settings.proxyType === "frogies") settings.proxyType = "ultraviolet";
   if (!settings.proxyType) settings.proxyType = "ultraviolet";
   if (!settings.searchEngine) settings.searchEngine = "google";
   if (settings.historyEnabled === undefined) settings.historyEnabled = true;
   if (settings.askBeforeDownload === undefined) settings.askBeforeDownload = true;
   if (settings.proxyEnabled === undefined) settings.proxyEnabled = true;
+  if (settings.enableChromiumDevTools === undefined) settings.enableChromiumDevTools = true;
+  if (settings.trackPreReleaseUpdates === undefined) settings.trackPreReleaseUpdates = false;
+  if (settings.enablePerformanceGraph === undefined) settings.enablePerformanceGraph = false;
+  if (settings.fpsLimitEnabled === undefined) settings.fpsLimitEnabled = false;
+  if (settings.fpsSyncDisplay === undefined) settings.fpsSyncDisplay = true;
+  if (settings.fpsLimit === undefined) settings.fpsLimit = 60;
 
   return settings;
 }
 
 function shouldRecordHistoryUrl(url) {
   if (!url || url.startsWith("file://")) return false;
-  if (url.includes("settings.html")) return false;
+  if (url.includes("settings.html") || url.includes("newtab.html")) return false;
   if (url.startsWith("bavarium://")) return false;
   return true;
 }
@@ -925,24 +1616,41 @@ function navigateCurrentTab(rawInput) {
     return;
   }
 
-  let url =
+  const destination =
     resolved.kind === "url"
       ? resolved.url
       : searchUrlForQuery(resolved.query, searchEngine);
 
-  url = wrapUrlForProxyIfNeeded(url, settings);
+  const te = currentTab;
+  if (te) primeTabGuestPageFromDestination(te, destination);
+
+  const url = wrapUrlForProxyIfNeeded(destination, settings);
 
   if (isOpposingProxyHomepageUrl(url, settings)) {
     notifyOpposingProxyHomepageBlocked(settings);
     return;
   }
 
-  if (currentTab && currentTab.view) {
-    currentTab.view.src = url;
+  if (te && te.view) {
+    te.view.src = url;
+    scheduleGuestTabPageMetaRefresh(te.view);
   }
 }
 
 const BOOKMARKS_KEY = "bavarium-bookmarks";
+
+const DEFAULT_BOOKMARK_ENTRIES = [
+  {
+    id: "default-bavarium-github",
+    title: "GitHub",
+    url: "https://github.com/yourworstnightmare1/bavarium-browser",
+  },
+  {
+    id: "default-bavarium-reblock",
+    title: "ReBlock Site",
+    url: "https://sites.google.com/view/reblock",
+  },
+];
 
 const DEFAULT_BOOKMARK_FAVICON =
   "data:image/svg+xml," +
@@ -1019,10 +1727,24 @@ function faviconUrlForBookmarkUrl(url) {
   }
 }
 
+function buildDefaultBookmarksList() {
+  return DEFAULT_BOOKMARK_ENTRIES.map((entry) => ({
+    id: entry.id,
+    title: entry.title,
+    url: entry.url,
+    faviconUrl: faviconUrlForBookmarkUrl(entry.url),
+  }));
+}
+
 function loadBookmarks() {
   try {
     const raw = localStorage.getItem(BOOKMARKS_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
+    if (raw === null) {
+      const defaults = buildDefaultBookmarksList();
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(defaults));
+      return defaults;
+    }
+    const arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr : [];
   } catch {
     return [];
@@ -1032,6 +1754,114 @@ function loadBookmarks() {
 function saveBookmarksList(list) {
   localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(list));
   renderBookmarkBar();
+}
+
+function setShellModalOpen(open) {
+  document.body.classList.toggle("shell-modal-open", !!open);
+}
+
+function normalizeBookmarkMatchUrl(url) {
+  if (!url || typeof url !== "string") return "";
+  const t = url.trim();
+  if (!t) return "";
+  try {
+    const u = new URL(t);
+    let href = u.href;
+    if (href.length > 1 && href.endsWith("/")) href = href.slice(0, -1);
+    return href;
+  } catch (_) {
+    return t;
+  }
+}
+
+function findBookmarkForUrl(url) {
+  const key = normalizeBookmarkMatchUrl(url);
+  if (!key) return null;
+  return (
+    loadBookmarks().find(
+      (b) => b && normalizeBookmarkMatchUrl(b.url) === key
+    ) || null
+  );
+}
+
+function suggestedBookmarkForCurrentTab() {
+  let url = "";
+  let title = "";
+  const te = currentTab;
+
+  if (te && te.guestPage && te.guestPage.url) {
+    const canonical = normalizeRemoteUrl(te.guestPage.url);
+    if (canonical) url = canonical;
+    title = (te.guestPage.title || te.fullTitle || "").trim();
+    if (title && isProxyLandingTitle(title)) title = "";
+  }
+
+  if (!url && te && te.view) {
+    try {
+      const shell = guestPageMetaFromShellUrl(webviewDisplayUrl(te.view));
+      if (shell && shell.url) url = shell.url;
+      if (!title && shell && shell.title) title = shell.title.trim();
+    } catch (_) {}
+  }
+
+  if (!url) {
+    const urlInput = document.getElementById("url");
+    const fromBar = urlInput && urlInput.value ? urlInput.value.trim() : "";
+    const canonical = normalizeRemoteUrl(fromBar);
+    if (canonical) url = canonical;
+  }
+
+  if (!url && te && te.view) {
+    try {
+      const cleaned = cleanUrl(webviewDisplayUrl(te.view));
+      const canonical = normalizeRemoteUrl(cleaned);
+      if (canonical) url = canonical;
+    } catch (_) {}
+  }
+
+  if (!title && te && te.view) {
+    try {
+      if (te.view.getTitle) title = (te.view.getTitle() || "").trim();
+    } catch (_) {}
+    if (title && isProxyLandingTitle(title)) title = "";
+  }
+
+  if (!title && url) {
+    try {
+      title = new URL(url).hostname;
+    } catch (_) {
+      title = "";
+    }
+  }
+
+  return { url, title };
+}
+
+async function resolveSuggestedBookmarkForCurrentTab() {
+  if (currentTab && currentTab.view) {
+    await refreshGuestTabPageMeta(currentTab.view);
+  }
+  return suggestedBookmarkForCurrentTab();
+}
+
+function applyBookmarkAutofillToInputs(titleIn, urlIn, suggested) {
+  if (!titleIn || !urlIn || !suggested) return;
+  titleIn.value = suggested.title || "";
+  urlIn.value = suggested.url || "";
+}
+
+function openBookmarkEditorForCurrentTab() {
+  void (async () => {
+    const suggested = await resolveSuggestedBookmarkForCurrentTab();
+    const existing = suggested.url
+      ? findBookmarkForUrl(suggested.url)
+      : null;
+    if (existing) {
+      await openBookmarkEditor(existing.id);
+      return;
+    }
+    await openBookmarkEditor(null, suggested);
+  })();
 }
 
 let editingBookmarkId = null;
@@ -1044,10 +1874,15 @@ function newBookmarkId() {
 }
 
 function renderBookmarkBar() {
+  const barContainer = document.getElementById("bookmarkbar");
   const bar = document.getElementById("bookmarkbarItems");
   if (!bar) return;
+  const items = loadBookmarks().filter((bm) => bm && bm.url);
+  if (barContainer) {
+    barContainer.classList.toggle("bookmarkbar-empty", items.length === 0);
+  }
   bar.innerHTML = "";
-  loadBookmarks().forEach((bm) => {
+  items.forEach((bm) => {
     const wrap = document.createElement("span");
     wrap.className = "bookmark-item";
     const bmName = (bm.title && bm.title.trim()) || "Bookmark";
@@ -1093,15 +1928,24 @@ function renderBookmarkBar() {
   });
 }
 
-function openBookmarkEditor(id) {
+let bookmarkAutofillGeneration = 0;
+
+async function openBookmarkEditor(id, preset) {
   const modal = document.getElementById("bookmarkModal");
   const titleIn = document.getElementById("bookmarkEditTitle");
   const urlIn = document.getElementById("bookmarkEditUrl");
   const removeBtn = document.getElementById("bookmarkBtnRemove");
   const modalHeading = document.getElementById("bookmarkModalTitle");
+  const autofillHint = document.getElementById("bookmarkAutofillHint");
+  const dialog = modal && modal.querySelector(".dialog");
   if (!modal || !titleIn || !urlIn) return;
 
+  const autofillGen = ++bookmarkAutofillGeneration;
   editingBookmarkId = id || null;
+  titleIn.disabled = false;
+  urlIn.disabled = false;
+  titleIn.readOnly = false;
+  urlIn.readOnly = false;
 
   if (id) {
     const bm = loadBookmarks().find((b) => b.id === id);
@@ -1110,27 +1954,55 @@ function openBookmarkEditor(id) {
     urlIn.value = bm.url || "";
     if (modalHeading) modalHeading.textContent = "Edit bookmark";
     if (removeBtn) removeBtn.style.display = "";
+    if (autofillHint) autofillHint.style.display = "none";
   } else {
-    titleIn.value = "";
-    try {
-      if (currentTab && currentTab.view && currentTab.view.getTitle) {
-        titleIn.value = currentTab.view.getTitle() || "";
-      }
-    } catch (_) {}
-    urlIn.value = document.getElementById("url")
-      ? document.getElementById("url").value || ""
-      : "";
+    let suggested = preset || suggestedBookmarkForCurrentTab();
+    if (!preset || !preset.url) {
+      suggested = await resolveSuggestedBookmarkForCurrentTab();
+    }
+    applyBookmarkAutofillToInputs(titleIn, urlIn, suggested);
     if (modalHeading) modalHeading.textContent = "Add bookmark";
     if (removeBtn) removeBtn.style.display = "none";
+    if (autofillHint) {
+      autofillHint.style.display = suggested.url ? "block" : "none";
+      autofillHint.textContent = suggested.url
+        ? "Filled from the current page — you can change the name or URL before saving."
+        : "";
+    }
+    void (async () => {
+      const fresh = await resolveSuggestedBookmarkForCurrentTab();
+      if (autofillGen !== bookmarkAutofillGeneration) return;
+      const userEdited =
+        titleIn.value.trim() !== (suggested.title || "").trim() ||
+        urlIn.value.trim() !== (suggested.url || "").trim();
+      if (!userEdited && fresh.url) {
+        applyBookmarkAutofillToInputs(titleIn, urlIn, fresh);
+        if (autofillHint) {
+          autofillHint.style.display = "block";
+          autofillHint.textContent =
+            "Filled from the current page — you can change the name or URL before saving.";
+        }
+      }
+    })();
   }
 
+  setShellModalOpen(true);
   modal.style.display = "flex";
-  setTimeout(() => titleIn.focus(), 50);
+  if (dialog && !dialog.__bavariumDialogStop) {
+    dialog.__bavariumDialogStop = true;
+    dialog.addEventListener("mousedown", (e) => e.stopPropagation());
+  }
+  requestAnimationFrame(() => {
+    titleIn.focus();
+    titleIn.select();
+  });
 }
 
 function closeBookmarkEditor() {
+  bookmarkAutofillGeneration++;
   const modal = document.getElementById("bookmarkModal");
   if (modal) modal.style.display = "none";
+  setShellModalOpen(false);
   editingBookmarkId = null;
 }
 
@@ -1178,8 +2050,87 @@ function goForward() {
   }
 }
 
-function refresh() {
-  if (currentTab) currentTab.view.reload();
+/** Rebuild proxy URL with ?url= (reload() alone hits the bare proxy home after replaceState). */
+function wrappedReloadUrlForTab(te, settings) {
+  if (!te?.view || !settings) return null;
+  const raw = webviewDisplayUrl(te.view);
+  if (raw.startsWith("bavarium://") || raw.includes("settings.html")) {
+    return null;
+  }
+
+  const remapped = remappedUrlForStaleProxyTab(te.view, te, settings);
+  if (remapped) return remapped;
+
+  if (settings.proxyEnabled === false) return null;
+
+  if (viewLooksLikeProxyShell(te.view)) {
+    const target = resolvedTargetUrlForStaleProxyTab(te.view, te);
+    if (target) return wrapUrlForProxyIfNeeded(target, settings);
+    try {
+      const u = new URL(raw);
+      if (u.searchParams.has("url")) {
+        return wrapUrlForProxyIfNeeded(
+          decodeURIComponent(u.get("url")),
+          settings
+        );
+      }
+    } catch (_) {}
+    return localProxyBaseUrl(settings);
+  }
+
+  return null;
+}
+
+function forceWebviewNavigation(view, href) {
+  if (!view || !href) return;
+  let current = "";
+  try {
+    current = webviewDisplayUrl(view);
+  } catch (_) {}
+  let next = href;
+  if (current === href) {
+    try {
+      const u = new URL(href);
+      u.searchParams.set("_bavarium_r", String(Date.now()));
+      next = u.href;
+    } catch (_) {}
+  }
+  view.src = next;
+}
+
+async function refresh() {
+  const te = currentTab;
+  if (!te?.view) return;
+
+  const settings = getSettings();
+  let newSrc = wrappedReloadUrlForTab(te, settings);
+
+  if (!newSrc && viewLooksLikeProxyShell(te.view)) {
+    await refreshGuestTabPageMeta(te.view);
+    newSrc = wrappedReloadUrlForTab(te, settings);
+  }
+
+  if (newSrc) {
+    forceWebviewNavigation(te.view, newSrc);
+    scheduleGuestTabPageMetaRefresh(te.view);
+    if (currentTab && currentTab.id === te.id) {
+      try {
+        const u = new URL(newSrc);
+        if (u.searchParams.has("url")) {
+          const inner = normalizeRemoteUrl(
+            decodeURIComponent(u.get("url"))
+          );
+          const urlInput = document.getElementById("url");
+          if (urlInput && inner) urlInput.value = inner;
+        }
+      } catch (_) {}
+    }
+    return;
+  }
+
+  try {
+    te.view.reload();
+  } catch (_) {}
 }
 
 function bavariumUrlToHash(url) {
@@ -1203,6 +2154,7 @@ function bavariumUrlToHash(url) {
       "history",
       "privacy",
       "downloads",
+      "developer",
     ]);
     if (frag && valid.has(frag)) return frag;
     if (seg && valid.has(seg)) return seg;
@@ -1213,6 +2165,7 @@ function bavariumUrlToHash(url) {
       history: "history",
       privacy: "privacy",
       downloads: "downloads",
+      developer: "developer",
     };
     if (hostMap[host]) return hostMap[host];
     return "settings";
@@ -1222,15 +2175,23 @@ function bavariumUrlToHash(url) {
 }
 
 function handleInternal(url, targetView) {
-  if (isBavariumNewTabUrl(url)) {
-    newTab();
-    return;
-  }
   const view = targetView || (currentTab && currentTab.view);
   if (!view) return;
+  if (isBavariumNewTabUrl(url)) {
+    view.src = new URL("newtab.html", window.location.href).href;
+    return;
+  }
   const base = new URL("settings.html", window.location.href).href.split("#")[0];
   const hash = bavariumUrlToHash(url);
   view.src = `${base}#${hash}`;
+}
+
+function internalPageToBavariumDisplay(fileUrl) {
+  try {
+    const u = new URL(fileUrl);
+    if (u.pathname.endsWith("newtab.html")) return "bavarium://newtab";
+  } catch (_) {}
+  return settingsFileToBavariumDisplay(fileUrl);
 }
 
 function settingsFileToBavariumDisplay(fileUrl) {
@@ -1245,6 +2206,7 @@ function settingsFileToBavariumDisplay(fileUrl) {
       history: "bavarium://history",
       privacy: "bavarium://privacy",
       downloads: "bavarium://downloads",
+      developer: "bavarium://developer",
       licenses: "bavarium://licenses",
       "licenses-scramjet": "bavarium://licenses/scramjet",
       "licenses-ultraviolet": "bavarium://licenses/ultraviolet",
@@ -1263,9 +2225,8 @@ function webviewDisplayUrl(view) {
 }
 
 function cleanUrl(url) {
-  const pretty = settingsFileToBavariumDisplay(url);
+  const pretty = internalPageToBavariumDisplay(url);
   if (pretty) return pretty;
-  const s = getSettings();
   try {
     const u = new URL(url);
     if (
@@ -1278,10 +2239,352 @@ function cleanUrl(url) {
   return url;
 }
 
+function guestPageFromProbeResult(te, probePage) {
+  if (!probePage) return null;
+  const probeUrl = normalizeRemoteUrl(probePage.url || "");
+  let probeTitle = (probePage.title || "").trim();
+  if (probeTitle && isProxyLandingTitle(probeTitle)) probeTitle = "";
+  if (!probeUrl && !probeTitle) return null;
+  let title = probeTitle;
+  if (!title && probeUrl) {
+    try {
+      title = new URL(probeUrl).hostname;
+    } catch (_) {
+      title = "";
+    }
+  }
+  if (!title && te && te.guestPage && te.guestPage.title) {
+    title = te.guestPage.title;
+  }
+  return {
+    url: probeUrl || te?.guestPage?.url || "",
+    title,
+    origin: probePage.origin || "",
+    favicon: probePage.favicon || "",
+  };
+}
+
+async function refreshGuestTabPageMeta(view) {
+  if (!view || viewIsIncognito(view)) return;
+  const te = tabEntryForView(view);
+  if (!te) return;
+
+  let id = null;
+  try {
+    if (typeof view.getWebContentsId === "function") {
+      id = view.getWebContentsId();
+    }
+  } catch (_) {}
+  if (!id) return;
+
+  if (viewLooksLikeProxyShell(view)) {
+    try {
+      const r = await ipcRenderer.invoke("bavarium-probe-guest-site-page", {
+        webContentsId: id,
+        refresh: true,
+      });
+      const page = guestPageFromProbeResult(te, r && r.ok ? r.page : null);
+      if (page && (page.url || page.title)) {
+        ipcRenderer.send("bavarium-guest-site-page", {
+          webContentsId: id,
+          page,
+        });
+        applyGuestPageToTab(te, page);
+        return;
+      }
+    } catch (_) {}
+    const raw = webviewDisplayUrl(view);
+    const shellPage = guestPageMetaFromShellUrl(raw);
+    if (shellPage) {
+      ipcRenderer.send("bavarium-guest-site-page", {
+        webContentsId: id,
+        page: shellPage,
+      });
+      applyGuestPageToTab(te, shellPage);
+    }
+    return;
+  }
+
+  if (!viewLooksLikeProxyShell(view)) {
+    let t = "";
+    try {
+      if (view.getTitle) t = (view.getTitle() || "").trim();
+    } catch (_) {}
+    if (t && !isProxyLandingTitle(t)) {
+      te.fullTitle = t;
+      const titleEl = tabTitleElement(te);
+      if (titleEl) {
+        applyTabStripLabel(view, titleEl, te.incognito, null, t, false);
+      }
+      refreshTabTooltip(te);
+    }
+    updateUrlBarForTab(te);
+  }
+}
+
+function closeToolbarMenu() {
+  const menu = document.getElementById("menu");
+  if (menu) menu.style.display = "none";
+}
+
 function toggleMenu() {
   const menu = document.getElementById("menu");
   if (!menu) return;
   menu.style.display = menu.style.display === "block" ? "none" : "block";
+}
+
+function getShareablePageUrl() {
+  if (!currentTab || !currentTab.view) return null;
+  const url = cleanUrl(webviewDisplayUrl(currentTab.view));
+  if (!url || url.startsWith("bavarium://") || url.startsWith("file://")) {
+    return null;
+  }
+  return url;
+}
+
+async function shareCurrentPage() {
+  closeToolbarMenu();
+  const url = getShareablePageUrl();
+  if (!url) {
+    alert("This page cannot be shared.");
+    return;
+  }
+  let title = "";
+  try {
+    if (currentTab.view.getTitle) {
+      title = (currentTab.view.getTitle() || "").trim();
+    }
+  } catch (_) {}
+  const result = await ipcRenderer.invoke("bavarium-share-page", { url, title });
+  if (result && result.method === "clipboard") {
+    alert("Native share is unavailable on this system. Page link copied to the clipboard.");
+  }
+}
+
+function initDevToolsHost() {
+  const host = document.getElementById("devtoolsHost");
+  if (!host) return;
+  const captureId = () => {
+    try {
+      const id = host.getWebContentsId();
+      if (id) devtoolsHostWebContentsId = id;
+    } catch (_) {}
+  };
+  host.addEventListener("dom-ready", captureId, { once: true });
+  if (host.getWebContentsId) captureId();
+}
+
+function showEmbeddedDevToolsPanel() {
+  document.body.classList.add("devtools-open");
+}
+
+function hideEmbeddedDevToolsPanel() {
+  document.body.classList.remove("devtools-open");
+  devtoolsOpenForTabId = null;
+}
+
+async function ensureDevToolsHostReady() {
+  if (devtoolsHostWebContentsId) return devtoolsHostWebContentsId;
+  const host = document.getElementById("devtoolsHost");
+  if (!host) return null;
+  return new Promise((resolve) => {
+    const done = () => resolve(devtoolsHostWebContentsId);
+    if (devtoolsHostWebContentsId) {
+      done();
+      return;
+    }
+    host.addEventListener("dom-ready", done, { once: true });
+    setTimeout(done, 500);
+  });
+}
+
+async function guestWebContentsIdForTab(te) {
+  if (!te || !te.view) return null;
+  if (te.guestWebContentsId) return te.guestWebContentsId;
+  try {
+    if (typeof te.view.getWebContentsId === "function") {
+      const id = te.view.getWebContentsId();
+      if (id) {
+        te.guestWebContentsId = id;
+        return id;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function attachDevToolsToTab(te) {
+  const hostId = await ensureDevToolsHostReady();
+  const guestId = await guestWebContentsIdForTab(te);
+  if (!hostId || !guestId) return false;
+  for (const t of tabs) {
+    if (t.id === te.id) continue;
+    const otherId = await guestWebContentsIdForTab(t);
+    if (!otherId) continue;
+    try {
+      await ipcRenderer.invoke("bavarium-open-devtools", {
+        webContentsId: otherId,
+        close: true,
+      });
+    } catch (_) {}
+  }
+  const result = await ipcRenderer.invoke("bavarium-open-devtools", {
+    webContentsId: guestId,
+    devtoolsHostWebContentsId: hostId,
+  });
+  if (result && result.ok) {
+    showEmbeddedDevToolsPanel();
+    devtoolsOpenForTabId = te.id;
+    return true;
+  }
+  console.warn("attachDevToolsToTab:", result);
+  return false;
+}
+
+async function closeEmbeddedDevTools() {
+  const te = tabs.find((t) => t.id === devtoolsOpenForTabId) || currentTab;
+  const guestId = te ? await guestWebContentsIdForTab(te) : null;
+  if (guestId) {
+    try {
+      await ipcRenderer.invoke("bavarium-open-devtools", {
+        webContentsId: guestId,
+        close: true,
+      });
+    } catch (_) {}
+  }
+  hideEmbeddedDevToolsPanel();
+}
+
+async function openCurrentTabDevTools() {
+  closeToolbarMenu();
+  if (getSettings().enableChromiumDevTools === false) {
+    return;
+  }
+  const te = currentTab;
+  if (!te || !te.view) return;
+
+  if (
+    document.body.classList.contains("devtools-open") &&
+    devtoolsOpenForTabId === te.id
+  ) {
+    await closeEmbeddedDevTools();
+    return;
+  }
+
+  const run = async () => {
+    if (await attachDevToolsToTab(te)) return;
+    const guestId = await guestWebContentsIdForTab(te);
+    if (!guestId) return;
+    const result = await ipcRenderer.invoke("bavarium-open-devtools", {
+      webContentsId: guestId,
+    });
+    if (result && result.ok) {
+      if (result.detached) {
+        console.warn("DevTools opened in a separate window (embed unavailable).");
+      }
+    }
+  };
+
+  const guestId = await guestWebContentsIdForTab(te);
+  if (guestId) {
+    await run();
+  } else {
+    te.view.addEventListener("dom-ready", () => run(), { once: true });
+  }
+}
+
+function closeBookmarkManager() {
+  const modal = document.getElementById("bookmarkManagerModal");
+  if (modal) modal.style.display = "none";
+  const bmModal = document.getElementById("bookmarkModal");
+  if (!bmModal || bmModal.style.display !== "flex") {
+    setShellModalOpen(false);
+  }
+}
+
+function renderBookmarkManagerList() {
+  const listEl = document.getElementById("bookmarkManagerList");
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  const items = loadBookmarks();
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "bm-manager-empty";
+    empty.textContent = "No bookmarks yet. Use Add bookmark to create one.";
+    listEl.appendChild(empty);
+    return;
+  }
+  items.forEach((bm) => {
+    const row = document.createElement("div");
+    row.className = "bm-manager-row";
+    row.title = bm.url;
+
+    const textCol = document.createElement("div");
+    textCol.style.flex = "1";
+    textCol.style.minWidth = "0";
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "bm-mgr-label";
+    nameEl.textContent = bm.title || bm.url;
+
+    const urlEl = document.createElement("div");
+    urlEl.className = "bm-mgr-url";
+    urlEl.textContent = bm.url;
+
+    textCol.appendChild(nameEl);
+    textCol.appendChild(urlEl);
+    row.appendChild(textCol);
+
+    row.addEventListener("click", () => {
+      closeBookmarkManager();
+      openBookmarkEditor(bm.id);
+    });
+
+    listEl.appendChild(row);
+  });
+}
+
+function openBookmarkManager() {
+  closeToolbarMenu();
+  const modal = document.getElementById("bookmarkManagerModal");
+  if (!modal) return;
+  renderBookmarkManagerList();
+  setShellModalOpen(true);
+  modal.style.display = "flex";
+  const dialog = modal.querySelector(".dialog");
+  if (dialog && !dialog.__bavariumDialogStop) {
+    dialog.__bavariumDialogStop = true;
+    dialog.addEventListener("mousedown", (e) => e.stopPropagation());
+  }
+}
+
+function handleToolbarMenuAction(action) {
+  closeToolbarMenu();
+  switch (action) {
+    case "settings":
+      newTab("bavarium://settings");
+      break;
+    case "history":
+      newTab("bavarium://history");
+      break;
+    case "bookmark-manager":
+      openBookmarkManager();
+      break;
+    case "downloads":
+      newTab("bavarium://downloads");
+      break;
+    case "share-page":
+      shareCurrentPage();
+      break;
+    case "developer-tools":
+      openCurrentTabDevTools();
+      break;
+    case "github-repo":
+      shell.openExternal(GITHUB_REPO_URL);
+      break;
+    default:
+      break;
+  }
 }
 
 // close menu when clicking outside
@@ -1289,7 +2592,10 @@ document.addEventListener("click", (e) => {
   const menu = document.getElementById("menu");
   if (!menu) return;
 
-  if (!e.target.closest("#menu") && !e.target.closest("button")) {
+  if (
+    !e.target.closest("#menu") &&
+    !e.target.closest("#btnToolbarMenu")
+  ) {
     menu.style.display = "none";
   }
 });
@@ -1303,7 +2609,7 @@ function applySettingsPayload(settings) {
   const homepage =
     settings.homepage === "frogies"
       ? "google"
-      : settings.homepage || "google";
+      : settings.homepage || "bavarium";
   const merged = {
     searchEngine: settings.searchEngine || "google",
     proxyType,
@@ -1316,19 +2622,354 @@ function applySettingsPayload(settings) {
     historyEnabled: settings.historyEnabled !== false,
     askBeforeDownload: settings.askBeforeDownload !== false,
     downloadPath: settings.downloadPath || "",
+    trackPreReleaseUpdates: settings.trackPreReleaseUpdates === true,
+    enableChromiumDevTools: settings.enableChromiumDevTools !== false,
+    enablePerformanceGraph: settings.enablePerformanceGraph === true,
+    fpsLimitEnabled: settings.fpsLimitEnabled === true,
+    fpsSyncDisplay: settings.fpsSyncDisplay !== false,
+    fpsLimit: normalizeFpsLimitSetting(settings.fpsLimit),
   };
   localStorage.setItem("settings", JSON.stringify(merged));
+  syncDeveloperUiFromSettings(merged);
+  applyFrameRateCapToAllWebviews();
+}
+
+let frameRateCapState = {
+  limitEnabled: false,
+  syncDisplay: true,
+  displayHz: 60,
+  effectiveCap: null,
+};
+
+/** Upper bound for perf overlay readings (configured cap or display refresh). */
+function perfFpsCeiling() {
+  if (
+    frameRateCapState.limitEnabled &&
+    frameRateCapState.effectiveCap > 0
+  ) {
+    return frameRateCapState.effectiveCap;
+  }
+  const hz = frameRateCapState.displayHz;
+  return Number.isFinite(hz) && hz > 0 ? hz : 240;
+}
+
+function clampPerfFps(fps) {
+  if (!Number.isFinite(fps)) return fps;
+  const ceil = perfFpsCeiling();
+  return Math.max(0, Math.min(ceil, fps));
+}
+
+function onPerfGraphIntervalGap() {
+  if (!perfGraphRafId) return;
+  lastTabFps = null;
+  perfTabPollTick = 5;
+  const te = currentTab;
+  if (!te || !te.guestWebContentsId) return;
+  ipcRenderer
+    .invoke("bavarium-reset-tab-fps-poll", {
+      webContentsId: te.guestWebContentsId,
+    })
+    .catch(() => {});
+}
+
+function normalizeFpsLimitSetting(raw) {
+  const n = parseInt(String(raw ?? 60), 10);
+  if (!Number.isFinite(n)) return 60;
+  const maxHz =
+    frameRateCapState.displayHz && frameRateCapState.displayHz > 0
+      ? frameRateCapState.displayHz
+      : 240;
+  return Math.max(1, Math.min(maxHz, n));
+}
+
+async function injectFrameCapOnWebview(view) {
+  if (!view) return;
+  let id = null;
+  try {
+    if (typeof view.getWebContentsId === "function") {
+      id = view.getWebContentsId();
+    }
+  } catch (_) {}
+  if (!id) return;
+  try {
+    await ipcRenderer.invoke("bavarium-inject-frame-cap", { webContentsId: id });
+  } catch (_) {}
+}
+
+function applyFrameRateCapToAllWebviews() {
+  document.querySelectorAll("webview.tab-webview").forEach((v) => {
+    void injectFrameCapOnWebview(v);
+  });
+}
+
+let perfGraphRafId = null;
+let perfGraphNetTimer = null;
+let lastTabFps = null;
+let perfTabPollTick = 0;
+let tabFpsPollSeq = 0;
+const perfFpsSamples = [];
+const perfShellFpsSamples = [];
+const perfDownSamples = [];
+const perfUpSamples = [];
+const PERF_SAMPLE_MAX = 48;
+
+function formatPerfRate(kbs) {
+  if (kbs >= 1024) return `${(kbs / 1024).toFixed(1)} MB/s`;
+  return `${kbs} KB/s`;
+}
+
+const PERF_FPS_TARGET = 60;
+const PERF_FPS_GREEN = { r: 129, g: 201, b: 149 };
+const PERF_FPS_RED = { r: 242, g: 139, b: 130 };
+
+/** Green at target FPS+; smooth blend toward red below target. */
+function perfFpsColorTarget() {
+  if (frameRateCapState.limitEnabled && frameRateCapState.effectiveCap > 0) {
+    return frameRateCapState.effectiveCap;
+  }
+  return PERF_FPS_TARGET;
+}
+
+function fpsColorForValue(fps) {
+  const target = perfFpsColorTarget();
+  if (!Number.isFinite(fps) || fps >= target) {
+    return "rgb(129, 201, 149)";
+  }
+  const t = Math.max(0, Math.min(1, fps / target));
+  const r = Math.round(PERF_FPS_RED.r + (PERF_FPS_GREEN.r - PERF_FPS_RED.r) * t);
+  const g = Math.round(PERF_FPS_RED.g + (PERF_FPS_GREEN.g - PERF_FPS_RED.g) * t);
+  const b = Math.round(PERF_FPS_RED.b + (PERF_FPS_GREEN.b - PERF_FPS_RED.b) * t);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+function applyFpsColor(el, fps) {
+  if (!el) return;
+  el.style.color = fpsColorForValue(fps);
+}
+
+function fpsLowHighAverages(samples) {
+  if (!samples.length) return { low: null, high: null };
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.max(1, Math.floor(sorted.length / 2));
+  const lowHalf = sorted.slice(0, mid);
+  const highHalf = sorted.slice(mid);
+  const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+  return {
+    low: avg(lowHalf),
+    high: avg(highHalf.length ? highHalf : lowHalf),
+  };
+}
+
+function drawPerfSparkline(canvas, samples, color, scaleMax) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!samples.length) return;
+  const max = Math.max(scaleMax || perfFpsCeiling(), ...samples, 1);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  samples.forEach((v, i) => {
+    const x = (i / Math.max(1, PERF_SAMPLE_MAX - 1)) * (w - 2) + 1;
+    const y = h - 2 - (v / max) * (h - 4);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function stopPerformanceGraph() {
+  if (perfGraphRafId) {
+    cancelAnimationFrame(perfGraphRafId);
+    perfGraphRafId = null;
+  }
+  if (perfGraphNetTimer) {
+    clearInterval(perfGraphNetTimer);
+    perfGraphNetTimer = null;
+  }
+  const overlay = document.getElementById("perfOverlay");
+  if (overlay) {
+    overlay.hidden = true;
+    overlay.setAttribute("aria-hidden", "true");
+  }
+  perfFpsSamples.length = 0;
+  perfShellFpsSamples.length = 0;
+  perfDownSamples.length = 0;
+  perfUpSamples.length = 0;
+  lastTabFps = null;
+}
+
+function scheduleTabFpsPoll(expectedSeq) {
+  const pollSeq = expectedSeq != null ? expectedSeq : tabFpsPollSeq;
+  const te = currentTab;
+  if (!te || !te.guestWebContentsId) {
+    if (pollSeq === tabFpsPollSeq) lastTabFps = null;
+    return;
+  }
+  const id = te.guestWebContentsId;
+  ipcRenderer
+    .invoke("bavarium-poll-tab-fps", { webContentsId: id })
+    .then((r) => {
+      if (pollSeq !== tabFpsPollSeq) return;
+      if (!currentTab || currentTab.guestWebContentsId !== id) return;
+      if (r && r.ok && r.fps != null && Number.isFinite(r.fps) && r.fps > 0) {
+        lastTabFps = clampPerfFps(r.fps);
+      }
+    })
+    .catch(() => {});
+}
+
+function perfGraphLoop(lastTs) {
+  const now = performance.now();
+  if (lastTs) {
+    const dtMs = now - lastTs;
+    if (dtMs <= 250) {
+      const minDtMs = 1000 / perfFpsCeiling();
+      const shellFps = clampPerfFps(1000 / Math.max(dtMs, minDtMs));
+      perfShellFpsSamples.push(shellFps);
+      if (perfShellFpsSamples.length > PERF_SAMPLE_MAX) perfShellFpsSamples.shift();
+
+      if (++perfTabPollTick % 6 === 0) {
+        scheduleTabFpsPoll();
+      }
+
+      const te = currentTab;
+      const tabReady = te && te.guestWebContentsId;
+      const graphFps = clampPerfFps(
+        tabReady && lastTabFps != null ? lastTabFps : shellFps
+      );
+      const graphSource = tabReady && lastTabFps != null ? "Tab" : "UI";
+
+      perfFpsSamples.push(graphFps);
+      if (perfFpsSamples.length > PERF_SAMPLE_MAX) perfFpsSamples.shift();
+
+      const fpsEl = document.getElementById("perfFpsLabel");
+      if (fpsEl) {
+        const capNote =
+          frameRateCapState.limitEnabled && frameRateCapState.effectiveCap
+            ? ` / ${frameRateCapState.effectiveCap}`
+            : "";
+        fpsEl.textContent = `${graphSource} ${Math.round(graphFps)}${capNote}`;
+        applyFpsColor(fpsEl, graphFps);
+      }
+      const uiEl = document.getElementById("perfUiFpsLabel");
+      if (uiEl) {
+        if (tabReady && lastTabFps != null) {
+          uiEl.textContent = `UI ${Math.round(shellFps)}`;
+          uiEl.style.display = "";
+        } else {
+          uiEl.textContent = "";
+          uiEl.style.display = "none";
+        }
+      }
+      const { low, high } = fpsLowHighAverages(perfFpsSamples);
+      const lowEl = document.getElementById("perfFpsLow");
+      const highEl = document.getElementById("perfFpsHigh");
+      if (lowEl) {
+        lowEl.textContent =
+          low != null && Number.isFinite(low) ? `↓ ${Math.round(low)}` : "↓ —";
+        applyFpsColor(lowEl, low != null ? low : 0);
+      }
+      if (highEl) {
+        highEl.textContent =
+          high != null && Number.isFinite(high)
+            ? `↑ ${Math.round(high)}`
+            : "↑ —";
+        applyFpsColor(highEl, high != null ? high : PERF_FPS_TARGET);
+      }
+      drawPerfSparkline(
+        document.getElementById("perfCanvasFps"),
+        perfFpsSamples,
+        fpsColorForValue(graphFps),
+        perfFpsCeiling()
+      );
+    } else {
+      onPerfGraphIntervalGap();
+    }
+  }
+  perfGraphRafId = requestAnimationFrame(() => perfGraphLoop(now));
+}
+
+function startPerformanceGraph() {
+  const s = getSettings();
+  if (s.enablePerformanceGraph !== true) {
+    stopPerformanceGraph();
+    return;
+  }
+  const overlay = document.getElementById("perfOverlay");
+  if (!overlay) return;
+  overlay.hidden = false;
+  overlay.setAttribute("aria-hidden", "false");
+  if (!perfGraphRafId) perfGraphLoop(0);
+  if (!perfGraphNetTimer) {
+    const pollNet = async () => {
+      try {
+        const st = await ipcRenderer.invoke("bavarium-perf-network-stats");
+        const down = st && Number.isFinite(st.downKBs) ? st.downKBs : 0;
+        const up = st && Number.isFinite(st.upKBs) ? st.upKBs : 0;
+        perfDownSamples.push(down);
+        perfUpSamples.push(up);
+        if (perfDownSamples.length > PERF_SAMPLE_MAX) perfDownSamples.shift();
+        if (perfUpSamples.length > PERF_SAMPLE_MAX) perfUpSamples.shift();
+        const netEl = document.getElementById("perfNetLabel");
+        if (netEl) {
+          netEl.textContent = `↓ ${formatPerfRate(down)}  ↑ ${formatPerfRate(up)}`;
+        }
+        const netCanvas = document.getElementById("perfCanvasNet");
+        const combined = perfDownSamples.map((d, i) => d + (perfUpSamples[i] || 0));
+        drawPerfSparkline(netCanvas, combined, "#81c995");
+      } catch (_) {}
+    };
+    pollNet();
+    perfGraphNetTimer = setInterval(pollNet, 500);
+  }
+}
+
+function syncDeveloperUiFromSettings(settings) {
+  const s = settings || getSettings();
+  const devItem = document.querySelector('[data-menu-action="developer-tools"]');
+  if (devItem) {
+    const enabled = s.enableChromiumDevTools !== false;
+    devItem.classList.toggle("disabled", !enabled);
+    devItem.setAttribute("aria-disabled", enabled ? "false" : "true");
+  }
+  if (s.enablePerformanceGraph === true) startPerformanceGraph();
+  else stopPerformanceGraph();
 }
 
 window.onload = async () => {
+  attachHoldAltMenuListeners(window);
+  attachHoldAltMenuListeners(document);
+  window.addEventListener("blur", () => setAltMenuBarHeld(false));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") onPerfGraphIntervalGap();
+  });
+  window.addEventListener("blur", onPerfGraphIntervalGap);
+
+  ipcRenderer.on("bavarium-protocol-navigate", (_e, url) => {
+    if (typeof url === "string" && url.startsWith("bavarium://")) {
+      handleInternal(url);
+    }
+  });
+
   try {
     const fileSettings = await ipcRenderer.invoke("get-settings");
     applySettingsPayload(fileSettings);
+    syncDeveloperUiFromSettings(fileSettings);
+    try {
+      const fr = await ipcRenderer.invoke("get-frame-rate-settings");
+      if (fr) frameRateCapState = fr;
+      applyFrameRateCapToAllWebviews();
+    } catch (_) {}
   } catch (e) {
     console.warn("get-settings failed:", e);
   }
 
   initTabStripContainer();
+  initDevToolsHost();
 
   if (pendingBootstrapTab) {
     const p = pendingBootstrapTab;
@@ -1343,7 +2984,7 @@ window.onload = async () => {
 
   const btnAddBm = document.getElementById("btnAddBookmark");
   if (btnAddBm) {
-    btnAddBm.addEventListener("click", () => openBookmarkEditor(null));
+    btnAddBm.addEventListener("click", () => openBookmarkEditorForCurrentTab());
   }
   const bmSave = document.getElementById("bookmarkBtnSave");
   const bmCancel = document.getElementById("bookmarkBtnCancel");
@@ -1420,7 +3061,7 @@ window.onload = async () => {
         openFindInPage();
         break;
       case "bookmark-page":
-        openBookmarkEditor(null);
+        openBookmarkEditorForCurrentTab();
         break;
       case "focus-url": {
         const el = document.getElementById("url");
@@ -1444,6 +3085,9 @@ window.onload = async () => {
         break;
       case "downloads":
         newTab("bavarium://downloads");
+        break;
+      case "developer":
+        newTab("bavarium://developer");
         break;
       default:
         break;
@@ -1493,7 +3137,7 @@ window.onload = async () => {
 
   if (key === "d") {
     e.preventDefault();
-    openBookmarkEditor(null);
+    openBookmarkEditorForCurrentTab();
     return;
   }
 
@@ -1563,13 +3207,26 @@ window.onload = async () => {
   if (findNext) findNext.addEventListener("click", () => findInPageNext(true));
   if (findClose) findClose.addEventListener("click", () => closeFindInPage());
 
+  ipcRenderer.on("bavarium-frame-rate-settings", (_e, state) => {
+    if (state && typeof state === "object") {
+      frameRateCapState = state;
+      applyFrameRateCapToAllWebviews();
+    }
+  });
+
   ipcRenderer.on("settings-updated", (_e, settings) => {
     applySettingsPayload(settings);
+    if (currentTab) {
+      refreshStaleProxyTabIfNeeded(currentTab);
+    }
     document.querySelectorAll("webview").forEach((wv) => {
       const src = wv.getAttribute("src") || "";
       if (src.includes("settings.html")) {
         wv.executeJavaScript(
           "window.__bavariumRefreshHistory && window.__bavariumRefreshHistory()"
+        ).catch(() => {});
+        wv.executeJavaScript(
+          "window.__bavariumRefreshDeveloper && window.__bavariumRefreshDeveloper()"
         ).catch(() => {});
       }
     });
@@ -1578,7 +3235,10 @@ window.onload = async () => {
   ipcRenderer.on("downloads-updated", () => {
     document.querySelectorAll("webview").forEach((wv) => {
       const src = wv.getAttribute("src") || "";
-      if (src.includes("settings.html")) {
+      if (
+        src.includes("settings.html") ||
+        src.startsWith("bavarium://downloads")
+      ) {
         wv.executeJavaScript(
           "window.__bavariumRefreshDownloads && window.__bavariumRefreshDownloads()"
         ).catch(() => {});
@@ -1605,20 +3265,36 @@ window.onload = async () => {
   });
 
   ipcRenderer.on("proxy-switched", () => {
-    console.log("Proxy switched → reloading tabs");
-    tabs.forEach((t) => {
-      if (t.view) t.view.reload();
-    });
+    tabs.forEach((t) => refreshStaleProxyTabIfNeeded(t));
+    if (currentTab) {
+      updateUrlBarForTab(currentTab);
+      scheduleGuestTabPageMetaRefresh(currentTab.view);
+    }
   });
 
   const menuEl = document.getElementById("menu");
   if (menuEl) {
     menuEl.addEventListener("click", (e) => {
-      const item = e.target.closest("[data-bavarium]");
-      if (!item) return;
+      const item = e.target.closest("[data-menu-action]");
+      if (!item || item.classList.contains("disabled")) return;
       e.stopPropagation();
-      newTab(item.dataset.bavarium);
-      menuEl.style.display = "none";
+      handleToolbarMenuAction(item.dataset.menuAction);
+    });
+  }
+
+  const bmMgrModal = document.getElementById("bookmarkManagerModal");
+  const bmMgrAdd = document.getElementById("bookmarkManagerAdd");
+  const bmMgrClose = document.getElementById("bookmarkManagerClose");
+  if (bmMgrAdd) {
+    bmMgrAdd.addEventListener("click", () => {
+      closeBookmarkManager();
+      openBookmarkEditorForCurrentTab();
+    });
+  }
+  if (bmMgrClose) bmMgrClose.addEventListener("click", closeBookmarkManager);
+  if (bmMgrModal) {
+    bmMgrModal.addEventListener("click", (e) => {
+      if (e.target === bmMgrModal) closeBookmarkManager();
     });
   }
 };

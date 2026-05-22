@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
@@ -15,10 +16,66 @@ const publicDir = join(__dirname, "../public");
 const app = express();
 
 const licenseFile = join(__dirname, "../LICENSE");
+
+function escapeHtml(text) {
+	return String(text)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
+function buildLicenseHtml(title, licenseText) {
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>${escapeHtml(title)} — License</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    padding: 1.25rem 1.5rem 2rem;
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+    background: #f5f5f5;
+    color: #111;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e8e8e8; }
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1rem; }
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(title)} — GNU Affero General Public License</h1>
+<pre>${escapeHtml(licenseText)}</pre>
+</body>
+</html>`;
+}
+
+let licenseHtmlCache = null;
+async function getLicenseHtml() {
+	if (!licenseHtmlCache) {
+		const text = await readFile(licenseFile, "utf8");
+		licenseHtmlCache = buildLicenseHtml("Ultraviolet", text);
+	}
+	return licenseHtmlCache;
+}
+
 // AGPL-3.0 §13: offer through customary means—the full license text used with this deployment.
-app.get("/LICENSE", (req, res) => {
-	res.type("text/plain; charset=utf-8");
-	res.sendFile(licenseFile);
+app.get("/LICENSE", async (req, res) => {
+	res.type("text/html; charset=utf-8");
+	res.send(await getLicenseHtml());
 });
 
 // Load our publicPath first and prioritize it over UV.

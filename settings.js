@@ -87,6 +87,89 @@ function wireIconSelect(wrap, onChange) {
 }
 
 let portStatusTimer = null;
+let applySettingsTimer = null;
+let settingsFormReady = false;
+
+function setSaveStatus(text) {
+  const el = document.getElementById("saveStatus");
+  if (el) el.textContent = text || "";
+}
+
+function scheduleApplySettings(options = {}) {
+  if (!settingsFormReady) return;
+  const { delay = 400, silent = true } = options;
+  if (applySettingsTimer) clearTimeout(applySettingsTimer);
+  applySettingsTimer = setTimeout(() => {
+    applySettingsTimer = null;
+    void applySettingsNow({ silent });
+  }, delay);
+}
+
+async function applySettingsNow({ silent = true } = {}) {
+  const next = collectSettingsFromForm();
+  const proxyChanged =
+    next.proxyType !== currentSettings.proxyType ||
+    next.uvPort !== currentSettings.uvPort ||
+    next.scramjetPort !== currentSettings.scramjetPort ||
+    next.transport !== currentSettings.transport ||
+    next.wssServer !== (currentSettings.wssServer || "") ||
+    next.proxyEnabled !== currentSettings.proxyEnabled;
+
+  currentSettings = next;
+  ipcRenderer.send("save-settings", next);
+  if (proxyChanged) ipcRenderer.send("change-proxy", next);
+
+  schedulePortStatusCheck();
+  updateLicensePortLinks();
+  await refreshFpsDisplayHint();
+
+  if (!silent) {
+    alert("Settings saved.");
+  } else {
+    setSaveStatus("Saved");
+    setTimeout(() => {
+      if (document.getElementById("saveStatus")?.textContent === "Saved") {
+        setSaveStatus("");
+      }
+    }, 2000);
+  }
+}
+
+function installAutoApplySettings() {
+  const schedule = () => scheduleApplySettings({ silent: true });
+  const scheduleDebounced = () => scheduleApplySettings({ delay: 500, silent: true });
+
+  [
+    "transport",
+    "wssServer",
+    "proxyEnabled",
+    "historyEnabled",
+    "askBeforeDownload",
+    "trackPreReleaseUpdates",
+    "enableChromiumDevTools",
+    "enablePerformanceGraph",
+    "fpsLimitEnabled",
+    "fpsSyncDisplay",
+  ].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", schedule);
+  });
+
+  ["uvPort", "scramjetPort", "fpsLimit"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", scheduleDebounced);
+    el.addEventListener("input", () => {
+      if (id === "fpsLimit") clampFpsLimitInput();
+      scheduleDebounced();
+      if (id === "uvPort" || id === "scramjetPort") {
+        schedulePortStatusCheck();
+        updateLicensePortLinks();
+      }
+    });
+  });
+}
 
 /** URL hash fragment → sidebar section id (DOM: section-{id}) */
 const HASH_TO_NAV = {
@@ -96,7 +179,10 @@ const HASH_TO_NAV = {
   history: "privacy",
   privacy: "privacy",
   downloads: "downloads",
+  developer: "developer",
 };
+
+let cachedDisplayHz = 60;
 
 const LICENSE_HASHES = new Set([
   "licenses",
@@ -175,6 +261,14 @@ function showSection(hashId) {
 
   if (nav === "proxy") schedulePortStatusCheck();
   if (nav === "downloads") void renderDownloads();
+  if (nav === "privacy") {
+    void renderHistory();
+    void renderSitePermissions();
+  }
+  if (nav === "developer") {
+    void renderFrameworkVersions();
+    void refreshFpsDisplayHint();
+  }
 }
 
 function applyHashFromLocation() {
@@ -394,7 +488,7 @@ function applySettingsToForm() {
   document.getElementById("uvPort").value = s.uvPort || "8080";
   document.getElementById("scramjetPort").value = s.scramjetPort || "3000";
   const homeH = document.getElementById("homepage");
-  if (homeH) homeH.value = s.homepage || "google";
+  if (homeH) homeH.value = s.homepage || "bavarium";
   syncIconSelectFromHidden(document.getElementById("homepageIconSelect"));
   const seH = document.getElementById("searchEngine");
   if (seH) seH.value = s.searchEngine || "google";
@@ -402,6 +496,23 @@ function applySettingsToForm() {
   document.getElementById("historyEnabled").checked = s.historyEnabled !== false;
   document.getElementById("askBeforeDownload").checked =
     s.askBeforeDownload !== false;
+  const trackPre = document.getElementById("trackPreReleaseUpdates");
+  if (trackPre) trackPre.checked = s.trackPreReleaseUpdates === true;
+  const devTools = document.getElementById("enableChromiumDevTools");
+  if (devTools) devTools.checked = s.enableChromiumDevTools !== false;
+  const perfGraph = document.getElementById("enablePerformanceGraph");
+  if (perfGraph) perfGraph.checked = s.enablePerformanceGraph === true;
+  const fpsLimitEnabled = document.getElementById("fpsLimitEnabled");
+  if (fpsLimitEnabled) fpsLimitEnabled.checked = s.fpsLimitEnabled === true;
+  const fpsSyncDisplay = document.getElementById("fpsSyncDisplay");
+  if (fpsSyncDisplay) fpsSyncDisplay.checked = s.fpsSyncDisplay !== false;
+  const fpsLimit = document.getElementById("fpsLimit");
+  if (fpsLimit) {
+    fpsLimit.value = String(s.fpsLimit ?? 60);
+    fpsLimit.max = String(cachedDisplayHz);
+  }
+  syncFpsSettingsUi();
+  void refreshFpsDisplayHint();
   syncProxyFieldsVisibility();
 }
 
@@ -416,11 +527,88 @@ function collectSettingsFromForm() {
     proxyEnabled: document.getElementById("proxyEnabled").checked,
     uvPort: document.getElementById("uvPort").value,
     scramjetPort: document.getElementById("scramjetPort").value,
-    homepage: document.getElementById("homepage").value.trim() || "google",
+    homepage: document.getElementById("homepage").value.trim() || "bavarium",
     historyEnabled: document.getElementById("historyEnabled").checked,
     askBeforeDownload: document.getElementById("askBeforeDownload").checked,
     downloadPath: currentSettings.downloadPath || "",
+    trackPreReleaseUpdates: !!document.getElementById("trackPreReleaseUpdates")?.checked,
+    enableChromiumDevTools: !!document.getElementById("enableChromiumDevTools")?.checked,
+    enablePerformanceGraph: !!document.getElementById("enablePerformanceGraph")?.checked,
+    fpsLimitEnabled: !!document.getElementById("fpsLimitEnabled")?.checked,
+    fpsSyncDisplay: !!document.getElementById("fpsSyncDisplay")?.checked,
+    fpsLimit: clampFpsLimitValue(
+      parseInt(document.getElementById("fpsLimit")?.value || "60", 10)
+    ),
   };
+}
+
+function clampFpsLimitValue(raw) {
+  const hz = cachedDisplayHz || 60;
+  let v = parseInt(String(raw), 10);
+  if (!Number.isFinite(v)) v = Math.min(60, hz);
+  return Math.max(1, Math.min(hz, v));
+}
+
+function clampFpsLimitInput() {
+  const el = document.getElementById("fpsLimit");
+  if (!el) return;
+  const hz = cachedDisplayHz || 60;
+  el.max = String(hz);
+  el.min = "1";
+  const clamped = clampFpsLimitValue(el.value);
+  if (String(clamped) !== el.value) {
+    el.value = String(clamped);
+  }
+}
+
+async function refreshFpsDisplayHint() {
+  const hint = document.getElementById("fpsDisplayHzHint");
+  const effective = document.getElementById("fpsEffectiveHint");
+  let hz = 60;
+  try {
+    const r = await ipcRenderer.invoke("get-display-refresh-rate");
+    if (r && Number.isFinite(r.hz)) hz = r.hz;
+  } catch (_) {}
+  cachedDisplayHz = hz;
+  clampFpsLimitInput();
+  if (hint) hint.textContent = `Primary display: ${hz} Hz (max FPS cannot exceed this)`;
+  try {
+    const state = await ipcRenderer.invoke("get-frame-rate-settings");
+    if (effective && state) {
+      if (!state.limitEnabled) {
+        effective.textContent = state.syncDisplay
+          ? "No cap — tied to display refresh (VSync on)."
+          : "No cap — VSync off (restart if you changed sync).";
+      } else {
+        effective.textContent = state.syncDisplay
+          ? `Page cap: ${state.effectiveCap} FPS (VSync on — restart if you changed sync).`
+          : `Page cap: ${state.effectiveCap} FPS (VSync off — restart if needed).`;
+      }
+    }
+  } catch (_) {}
+}
+
+function syncFpsSettingsUi() {
+  const limitOn = !!document.getElementById("fpsLimitEnabled")?.checked;
+  const syncOn = !!document.getElementById("fpsSyncDisplay")?.checked;
+  const fpsLimit = document.getElementById("fpsLimit");
+  if (fpsLimit) {
+    fpsLimit.disabled = !limitOn;
+    if (limitOn) clampFpsLimitInput();
+  }
+  const syncEl = document.getElementById("fpsSyncDisplay");
+  if (syncEl && syncEl.parentElement) {
+    syncEl.parentElement.style.opacity = limitOn ? "1" : "0.55";
+  }
+  if (fpsLimit) {
+    fpsLimit.style.opacity = limitOn ? "1" : "0.55";
+  }
+  const eff = document.getElementById("fpsEffectiveHint");
+  if (eff && !limitOn) {
+    eff.textContent = syncOn
+      ? "No frame cap — pages run at display refresh when VSync is on."
+      : "No frame cap.";
+  }
 }
 
 async function refreshDownloadPathLabel() {
@@ -475,6 +663,175 @@ async function renderHistory() {
   });
 }
 
+let sitePermissionTypesCache = [];
+
+async function renderSitePermissions() {
+  const container = document.getElementById("sitePermissionsList");
+  if (!container) return;
+  let data = { sites: [], permissionTypes: [] };
+  try {
+    data = await ipcRenderer.invoke("get-site-permissions");
+  } catch (e) {
+    console.warn("get-site-permissions:", e);
+  }
+  sitePermissionTypesCache = data.permissionTypes || [];
+  const types = sitePermissionTypesCache;
+  const sites = data.sites || [];
+
+  if (!sites.length) {
+    container.innerHTML =
+      '<p class="empty-hint">No site permission rules yet. Add a site above, or choose “Always allow/block” when a site asks for access.</p>';
+    return;
+  }
+
+  container.innerHTML = sites
+    .map((site, siteIdx) => {
+      const selects = types
+        .map((t, typeIdx) => {
+          const rule = (site.rules && site.rules[t.id]) || "ask";
+          const sid = `perm-${siteIdx}-${typeIdx}`;
+          return `
+        <label for="${sid}">${escapeHtml(t.label)}</label>
+        <select id="${sid}" class="site-perm-select" data-origin="${escapeHtml(site.origin)}" data-permission="${escapeHtml(t.id)}">
+          <option value="ask"${rule === "ask" ? " selected" : ""}>Ask every time</option>
+          <option value="allow"${rule === "allow" ? " selected" : ""}>Allow</option>
+          <option value="block"${rule === "block" ? " selected" : ""}>Block</option>
+        </select>`;
+        })
+        .join("");
+      return `
+    <div class="site-perm-card" data-origin="${escapeHtml(site.origin)}">
+      <div class="site-perm-head">
+        <div>
+          <div class="site-perm-host">${escapeHtml(site.hostname || site.origin)}</div>
+          <div class="site-perm-origin">${escapeHtml(site.origin)}</div>
+        </div>
+        <button type="button" class="btn secondary site-perm-remove" data-origin="${escapeHtml(site.origin)}">Remove site</button>
+      </div>
+      <div class="site-perm-grid">${selects}</div>
+    </div>`;
+    })
+    .join("");
+
+  container.querySelectorAll(".site-perm-select").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      const origin = sel.dataset.origin;
+      const permission = sel.dataset.permission;
+      const rule = sel.value;
+      try {
+        await ipcRenderer.invoke("set-site-permission", { origin, permission, rule });
+      } catch (e) {
+        alert("Could not update permission: " + (e && e.message ? e.message : String(e)));
+        await renderSitePermissions();
+      }
+    });
+  });
+
+  container.querySelectorAll(".site-perm-remove").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const origin = btn.dataset.origin;
+      if (!origin) return;
+      if (!confirm(`Remove all permission rules for ${origin}?`)) return;
+      await ipcRenderer.invoke("remove-site-permissions", { origin });
+      await renderSitePermissions();
+    });
+  });
+}
+
+async function renderFrameworkVersions() {
+  const body = document.getElementById("frameworkVersionsBody");
+  if (!body) return;
+  let data = { rows: [] };
+  try {
+    data = await ipcRenderer.invoke("get-framework-versions");
+  } catch (e) {
+    console.warn("get-framework-versions:", e);
+  }
+  const rows = data.rows || [];
+  if (!rows.length) {
+    body.innerHTML =
+      '<tr><td colspan="2" class="empty-hint">Could not load version information.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows
+    .map((r) => {
+      const ver = r.detail ? `${escapeHtml(r.version)} (${escapeHtml(r.detail)})` : escapeHtml(r.version);
+      return `<tr><td>${escapeHtml(r.name)}</td><td>${ver}</td></tr>`;
+    })
+    .join("");
+}
+
+async function runFrameworkUpdateCheck() {
+  const out = document.getElementById("frameworkUpdateResults");
+  const btn = document.getElementById("checkFrameworkUpdatesBtn");
+  if (!out) return;
+  if (btn) btn.disabled = true;
+  out.classList.add("is-visible");
+  out.textContent = "Checking npm for updates…";
+  try {
+    const result = await ipcRenderer.invoke("check-framework-updates");
+    if (!result || !result.ok) {
+      out.textContent =
+        "Update check failed.\n" + (result && result.error ? result.error : "");
+      return;
+    }
+    if (result.npmError && !result.packages.length) {
+      out.textContent =
+        "npm could not run (is Node.js/npm installed and on your PATH?).\n" +
+        (result.npmError || "");
+      return;
+    }
+    if (!result.packages.length) {
+      out.textContent = result.includePrerelease
+        ? "All tracked frameworks are up to date (including pre-release channels where checked)."
+        : "All tracked frameworks are up to date.";
+      return;
+    }
+    const lines = result.packages.map((p) => {
+      const tag = p.prereleaseTag ? ` [pre-release: ${p.prereleaseTag}]` : "";
+      return `${p.name}: ${p.current} → ${p.latest}${p.wanted !== p.latest ? ` (wanted ${p.wanted})` : ""}${tag}`;
+    });
+    out.textContent = lines.join("\n");
+  } catch (e) {
+    out.textContent = "Update check failed: " + (e && e.message ? e.message : String(e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+window.__bavariumRefreshDeveloper = async () => {
+  await renderFrameworkVersions();
+};
+
+async function addSitePermissionOriginFromInput() {
+  const input = document.getElementById("sitePermAddOrigin");
+  if (!input) return;
+  const raw = (input.value || "").trim();
+  if (!raw) return;
+  let origin = raw;
+  if (!/^https?:\/\//i.test(origin)) {
+    origin = "https://" + origin;
+  }
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      alert("Enter a normal web address (http or https).");
+      return;
+    }
+    origin = u.origin;
+  } catch {
+    alert("Enter a valid site URL, for example https://example.com");
+    return;
+  }
+  const result = await ipcRenderer.invoke("add-site-permission-origin", { origin });
+  if (!result || !result.ok) {
+    alert("Could not add site.");
+    return;
+  }
+  input.value = "";
+  await renderSitePermissions();
+}
+
 async function renderDownloads() {
   const container = document.getElementById("downloadList");
   if (!container) return;
@@ -525,21 +882,7 @@ async function renderDownloads() {
 }
 
 function saveSettings() {
-  const next = collectSettingsFromForm();
-  const proxyChanged =
-    next.proxyType !== currentSettings.proxyType ||
-    next.uvPort !== currentSettings.uvPort ||
-    next.scramjetPort !== currentSettings.scramjetPort ||
-    next.transport !== currentSettings.transport ||
-    next.wssServer !== (currentSettings.wssServer || "") ||
-    next.proxyEnabled !== currentSettings.proxyEnabled;
-
-  currentSettings = next;
-  ipcRenderer.send("save-settings", next);
-  if (proxyChanged) ipcRenderer.send("change-proxy", next);
-  alert("Settings saved.");
-  schedulePortStatusCheck();
-  updateLicensePortLinks();
+  void applySettingsNow({ silent: false });
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -557,6 +900,8 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   applyHashFromLocation();
   window.addEventListener("hashchange", applyHashFromLocation);
+
+  installAutoApplySettings();
 
   const uvBack = document.getElementById("licenseUvBackProxy");
   const sjBack = document.getElementById("licenseSjBackProxy");
@@ -577,37 +922,25 @@ window.addEventListener("DOMContentLoaded", async () => {
     btn.addEventListener("click", () => showSection(btn.dataset.hash));
   });
 
-  ["uvPort", "scramjetPort"].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.addEventListener("input", () => {
-        schedulePortStatusCheck();
-        updateLicensePortLinks();
-      });
-      el.addEventListener("change", () => {
-        schedulePortStatusCheck();
-        updateLicensePortLinks();
-      });
-    }
-  });
   const proxyIconWrap = document.getElementById("proxyTypeIconSelect");
   if (proxyIconWrap) {
     wireIconSelect(proxyIconWrap, () => {
       syncProxyFieldsVisibility();
       schedulePortStatusCheck();
+      scheduleApplySettings({ silent: true });
     });
     syncIconSelectFromHidden(proxyIconWrap);
   }
 
   const homeIconWrap = document.getElementById("homepageIconSelect");
   if (homeIconWrap) {
-    wireIconSelect(homeIconWrap, () => {});
+    wireIconSelect(homeIconWrap, () => scheduleApplySettings({ silent: true }));
     syncIconSelectFromHidden(homeIconWrap);
   }
 
   const searchIconWrap = document.getElementById("searchEngineIconSelect");
   if (searchIconWrap) {
-    wireIconSelect(searchIconWrap, () => {});
+    wireIconSelect(searchIconWrap, () => scheduleApplySettings({ silent: true }));
     syncIconSelectFromHidden(searchIconWrap);
   }
 
@@ -624,7 +957,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  document.getElementById("saveBtn").addEventListener("click", saveSettings);
+  const saveBtn = document.getElementById("saveBtn");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", saveSettings);
+  }
 
   document.getElementById("clearHistoryBtn").addEventListener("click", async () => {
     if (!confirm("Clear all browsing history?")) return;
@@ -632,13 +968,53 @@ window.addEventListener("DOMContentLoaded", async () => {
     await renderHistory();
   });
 
+  const sitePermAddBtn = document.getElementById("sitePermAddBtn");
+  const sitePermAddOrigin = document.getElementById("sitePermAddOrigin");
+  if (sitePermAddBtn) {
+    sitePermAddBtn.addEventListener("click", () => {
+      void addSitePermissionOriginFromInput();
+    });
+  }
+  if (sitePermAddOrigin) {
+    sitePermAddOrigin.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        void addSitePermissionOriginFromInput();
+      }
+    });
+  }
+
+  const fpsLimitInput = document.getElementById("fpsLimit");
+  if (fpsLimitInput) {
+    fpsLimitInput.addEventListener("input", () => syncFpsSettingsUi());
+    fpsLimitInput.addEventListener("change", () => syncFpsSettingsUi());
+  }
+
+  const checkFwBtn = document.getElementById("checkFrameworkUpdatesBtn");
+  if (checkFwBtn) {
+    checkFwBtn.addEventListener("click", () => {
+      void runFrameworkUpdateCheck();
+    });
+  }
+
+  const clearAllSitePermBtn = document.getElementById("clearAllSitePermissionsBtn");
+  if (clearAllSitePermBtn) {
+    clearAllSitePermBtn.addEventListener("click", async () => {
+      if (!confirm("Reset all site permission rules? Sites will ask again when they need access.")) {
+        return;
+      }
+      await ipcRenderer.invoke("clear-all-site-permissions");
+      await renderSitePermissions();
+    });
+  }
+
   const clearAllBtn = document.getElementById("clearAllBrowserDataBtn");
   if (clearAllBtn) {
     clearAllBtn.addEventListener("click", async () => {
       if (
         !confirm(
           "Delete all browser data and logs?\n\n" +
-            "This clears browsing history, download history, bookmarks, and all site data " +
+            "This clears browsing history, download history, site permission rules, bookmarks, and all site data " +
             "(cookies, storage, cache). Settings you see here stay saved. Open tabs will reload."
         )
       ) {
@@ -647,6 +1023,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       try {
         await ipcRenderer.invoke("bavarium-clear-all-browser-data");
         await renderHistory();
+        await renderSitePermissions();
         await renderDownloads();
       } catch (e) {
         alert("Could not clear all data: " + (e && e.message ? e.message : String(e)));
@@ -661,7 +1038,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (!picked) return;
       currentSettings.downloadPath = picked;
       await refreshDownloadPathLabel();
-      ipcRenderer.send("save-settings", collectSettingsFromForm());
+      await applySettingsNow({ silent: true });
     }
   );
 
@@ -671,7 +1048,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       delete currentSettings.downloadPath;
       currentSettings.downloadPath = "";
       await refreshDownloadPathLabel();
-      ipcRenderer.send("save-settings", collectSettingsFromForm());
+      await applySettingsNow({ silent: true });
     }
   );
 
@@ -688,4 +1065,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     void renderDownloads();
   });
 
+  ipcRenderer.on("settings-updated", () => {
+    if (document.getElementById("section-developer")?.classList.contains("active")) {
+      void renderFrameworkVersions();
+    }
+  });
+
+  settingsFormReady = true;
 });

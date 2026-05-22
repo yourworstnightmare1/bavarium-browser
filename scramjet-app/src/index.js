@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { fileURLToPath } from "url";
@@ -14,6 +14,61 @@ import { baremuxPath } from "@mercuryworkshop/bare-mux/node";
 const publicPath = fileURLToPath(new URL("../public/", import.meta.url));
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const licensePath = join(repoRoot, "LICENSE");
+
+function escapeHtml(text) {
+	return String(text)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
+function buildLicenseHtml(title, licenseText) {
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>${escapeHtml(title)} — License</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    padding: 1.25rem 1.5rem 2rem;
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+    background: #f5f5f5;
+    color: #111;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e8e8e8; }
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1rem; }
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(title)} — GNU Affero General Public License</h1>
+<pre>${escapeHtml(licenseText)}</pre>
+</body>
+</html>`;
+}
+
+let licenseHtmlCache = null;
+async function getLicenseHtml() {
+	if (!licenseHtmlCache) {
+		const text = await readFile(licensePath, "utf8");
+		licenseHtmlCache = buildLicenseHtml("Scramjet", text);
+	}
+	return licenseHtmlCache;
+}
 
 // Wisp Configuration: Refer to the documentation at https://www.npmjs.com/package/@mercuryworkshop/wisp-js
 
@@ -41,8 +96,8 @@ const fastify = Fastify({
 
 // Register before static so /LICENSE is not treated as a missing public file.
 fastify.get("/LICENSE", async (req, reply) => {
-	reply.type("text/plain; charset=utf-8");
-	return reply.send(createReadStream(licensePath));
+	reply.type("text/html; charset=utf-8");
+	return reply.send(await getLicenseHtml());
 });
 
 fastify.register(fastifyStatic, {

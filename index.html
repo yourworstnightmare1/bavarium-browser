@@ -86,7 +86,7 @@
       background: #eee;
     }
 
-    body.find-open webview {
+    body.find-open #pageColumn {
       height: calc(100vh - 154px);
     }
 
@@ -109,30 +109,107 @@
       flex: 1;
       min-width: 0;
       width: auto !important;
+      appearance: none;
+      -webkit-appearance: none;
+      padding: 6px 10px;
+      font-size: 13px;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      background-color: #f0f2f5;
+      color: #202124;
     }
     #btnAddBookmark {
       flex-shrink: 0;
       width: 32px;
       height: 32px;
       padding: 0;
-      border: 1px solid #aaa;
+      margin: 0;
+      border: 1px solid #dadce0;
       border-radius: 8px;
-      background: #fff;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background-color: #e8eaed !important;
+      background-image: none !important;
+      box-shadow: none !important;
       cursor: pointer;
       font-size: 17px;
       line-height: 1;
+      font-family: inherit;
       color: #5f6368;
       display: flex;
       align-items: center;
       justify-content: center;
     }
     #btnAddBookmark:hover {
-      background: #fff8e1;
-      color: #e65100;
-      border-color: #ffb74d;
+      background-color: rgba(0, 200, 83, 0.14);
+      color: #00796b;
+      border-color: #dadce0;
     }
-    .menu-item:hover {
+    #btnAddBookmark:active {
+      background-color: rgba(0, 200, 83, 0.22);
+    }
+    #btnAddBookmark:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(0, 200, 83, 0.35);
+    }
+    @media (prefers-color-scheme: dark) {
+      #controls {
+        background: #202124;
+      }
+      #url {
+        background-color: #303134;
+        color: #e8eaed;
+        border-color: #5f6368;
+      }
+      #btnAddBookmark {
+        background-color: #3c4043 !important;
+        color: #e8eaed;
+        border-color: #5f6368;
+      }
+      #btnAddBookmark:hover {
+        background-color: rgba(0, 230, 118, 0.16) !important;
+        color: #69f0ae;
+        border-color: #5f6368;
+      }
+      .toolbar-icon-btn {
+        color: #e8eaed;
+      }
+      .toolbar-icon-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+    }
+    #menu .menu-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+    #menu .menu-item:hover {
       background: rgba(255,255,255,.08);
+    }
+    #menu .menu-item.disabled {
+      opacity: 0.45;
+      cursor: default;
+      pointer-events: none;
+    }
+    #menu .menu-item-icon {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      object-fit: contain;
+      pointer-events: none;
+      opacity: 0.92;
+    }
+    #menu .menu-item-icon.icon-light {
+      filter: invert(1) brightness(1.05);
+    }
+    #menu .menu-item-label {
+      flex: 1;
+      min-width: 0;
     }
 
     .toolbar-icon-btn {
@@ -167,6 +244,9 @@
       background: #ececec;
       border-bottom: 1px solid #c8c8c8;
       min-height: 34px;
+    }
+    #bookmarkbar.bookmarkbar-empty {
+      display: none;
     }
     #bookmarkbarItems {
       display: flex;
@@ -221,74 +301,285 @@
     .bookmark-item .bm-edit:hover {
       opacity: 1;
     }
-    #bookmarkModal {
+    #bookmarkModal,
+    #bookmarkManagerModal {
       display: none;
       position: fixed;
       inset: 0;
-      z-index: 2000;
-      background: rgba(0,0,0,.45);
+      z-index: 10000;
+      background: rgba(0, 0, 0, 0.45);
       align-items: center;
       justify-content: center;
+      padding: 16px;
+      pointer-events: auto;
     }
-    #bookmarkModal .dialog {
-      background: #fff;
-      color: #222;
+    #bookmarkModal .dialog,
+    #bookmarkManagerModal .dialog {
+      --shell-surface: #f0f2f5;
+      --shell-bg: #fff;
+      --shell-text: #202124;
+      --shell-muted: #5f6368;
+      --shell-border: #dadce0;
+      --shell-accent-a: #4fc3f7;
+      --shell-accent-b: #26c6a0;
+      --shell-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+      --shell-tile-hover: rgba(0, 200, 83, 0.14);
+      background: var(--shell-surface);
+      color: var(--shell-text);
+      border: 1px solid var(--shell-border);
+      border-radius: 12px;
       padding: 20px 22px;
-      border-radius: 10px;
-      min-width: 380px;
+      width: min(100%, 400px);
       max-width: 90vw;
-      box-shadow: 0 12px 40px rgba(0,0,0,.25);
+      box-shadow: var(--shell-shadow);
+      pointer-events: auto;
     }
-    #bookmarkModal .dialog h3 {
+    #bookmarkManagerModal .dialog {
+      width: min(100%, 420px);
+    }
+    @media (prefers-color-scheme: dark) {
+      #bookmarkModal .dialog,
+      #bookmarkManagerModal .dialog {
+        --shell-surface: #1e1f20;
+        --shell-bg: #131314;
+        --shell-text: #e8eaed;
+        --shell-muted: #9aa0a6;
+        --shell-border: #3c4043;
+        --shell-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        --shell-tile-hover: rgba(0, 230, 118, 0.16);
+      }
+    }
+    /* Webviews paint above normal DOM; hide them while a shell modal is open. */
+    body.shell-modal-open #views {
+      background: #f0f2f5;
+    }
+    body.shell-modal-open #views webview.tab-webview,
+    body.shell-modal-open #devtoolsHost {
+      visibility: hidden;
+    }
+    #bookmarkModal .dialog h2,
+    #bookmarkManagerModal .dialog h2 {
       margin: 0 0 14px;
       font-size: 16px;
       font-weight: 600;
     }
+    #bookmarkManagerList {
+      max-height: 50vh;
+      overflow-y: auto;
+      margin: 8px 0 12px;
+    }
+    .bm-manager-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--shell-border);
+      border-radius: 8px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      background: var(--shell-bg);
+    }
+    .bm-manager-row:hover {
+      background: var(--shell-tile-hover);
+    }
+    .bm-manager-row .bm-mgr-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      color: var(--shell-text);
+    }
+    .bm-manager-row .bm-mgr-url {
+      font-size: 11px;
+      color: var(--shell-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bm-manager-empty {
+      font-size: 13px;
+      color: var(--shell-muted);
+      padding: 12px 4px;
+      line-height: 1.4;
+    }
+    #bookmarkAutofillHint {
+      display: none;
+      font-size: 12px;
+      color: var(--shell-muted);
+      margin: 0 0 4px;
+      line-height: 1.4;
+    }
     #bookmarkModal .dialog label {
       display: block;
       font-size: 12px;
-      color: #555;
-      margin-bottom: 4px;
-      margin-top: 10px;
+      color: var(--shell-muted);
+      margin: 10px 0 4px;
+    }
+    #bookmarkModal .dialog label:first-of-type {
+      margin-top: 0;
     }
     #bookmarkModal .dialog input {
       width: 100%;
       box-sizing: border-box;
       padding: 8px 10px;
       font-size: 13px;
-      border: 1px solid #bbb;
-      border-radius: 6px;
+      border: 1px solid var(--shell-border);
+      border-radius: 8px;
+      background: var(--shell-bg);
+      color: var(--shell-text);
+      pointer-events: auto;
     }
-    #bookmarkModal .dialog .actions {
+    #bookmarkModal .dialog input:focus {
+      outline: none;
+      border-color: var(--shell-accent-a);
+      box-shadow: 0 0 0 3px rgba(79, 195, 247, 0.25);
+    }
+    #bookmarkModal .dialog input:disabled,
+    #bookmarkModal .dialog input[readonly] {
+      background: var(--shell-bg);
+      color: var(--shell-text);
+      opacity: 1;
+      cursor: text;
+    }
+    #bookmarkModal .dialog .dialog-actions,
+    #bookmarkManagerModal .dialog .dialog-actions {
       display: flex;
       gap: 8px;
       justify-content: flex-end;
       margin-top: 18px;
       flex-wrap: wrap;
     }
-    #bookmarkModal .dialog button {
+    #bookmarkModal .dialog button,
+    #bookmarkManagerModal .dialog button {
       padding: 8px 14px;
       font-size: 13px;
-      border-radius: 6px;
+      border-radius: 8px;
       cursor: pointer;
-      border: 1px solid #bbb;
-      background: #f5f5f5;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-bg);
+      color: var(--shell-text);
     }
-    #bookmarkModal .dialog button.primary {
-      background: #1a73e8;
+    #bookmarkModal .dialog button:hover,
+    #bookmarkManagerModal .dialog button:hover {
+      filter: brightness(0.97);
+    }
+    #bookmarkModal .dialog button.primary,
+    #bookmarkManagerModal .dialog button.primary {
+      background: linear-gradient(135deg, var(--shell-accent-a), var(--shell-accent-b));
+      border: none;
       color: #fff;
-      border-color: #1a73e8;
+    }
+    #bookmarkModal .dialog button.primary:hover,
+    #bookmarkManagerModal .dialog button.primary:hover {
+      filter: brightness(1.05);
     }
     #bookmarkModal .dialog button.danger {
-      background: #fff;
+      background: var(--shell-bg);
       color: #c5221f;
-      border-color: #ddd;
+      border-color: var(--shell-border);
       margin-right: auto;
     }
 
-    webview {
+    #pageColumn {
+      display: flex;
+      flex-direction: column;
       width: 100%;
       height: calc(100vh - 118px);
+      min-height: 0;
+    }
+    #views {
+      flex: 1 1 auto;
+      min-height: 100px;
+      position: relative;
+      overflow: hidden;
+    }
+    #views > webview.tab-webview {
+      width: 100%;
+      height: 100%;
+    }
+    #devtoolsHost {
+      display: none;
+      flex: 0 0 42%;
+      width: 100%;
+      min-height: 160px;
+      border-top: 1px solid #5f6368;
+      background: #202124;
+    }
+    body.devtools-open #devtoolsHost {
+      display: flex;
+    }
+
+    #perfOverlay {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      z-index: 2500;
+      width: 220px;
+      padding: 8px 10px 10px;
+      border-radius: 10px;
+      background: rgba(32, 33, 36, 0.92);
+      border: 1px solid #5f6368;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+      font-size: 11px;
+      color: #e8eaed;
+      pointer-events: none;
+      font-family: ui-monospace, monospace;
+    }
+    #perfOverlay[hidden] {
+      display: none !important;
+    }
+    body.devtools-open #perfOverlay {
+      bottom: 12px;
+    }
+    #perfOverlay .perf-title {
+      font-size: 10px;
+      color: #9aa0a6;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    #perfOverlay .perf-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    #perfOverlay canvas {
+      flex-shrink: 0;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.25);
+    }
+    #perfFpsText {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      line-height: 1.25;
+    }
+    #perfFpsLabel, #perfNetLabel {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .perf-ui-fps {
+      font-size: 9px;
+      color: #9aa0a6;
+      margin-left: 4px;
+    }
+    #perfFpsLabel, .perf-fps-band {
+      transition: color 0.4s ease;
+    }
+    .perf-fps-bands {
+      display: flex;
+      gap: 10px;
+      font-size: 10px;
+    }
+    #perfNetLabel {
+      flex: 1;
+      min-width: 0;
     }
   </style>
 </head>
@@ -339,7 +630,7 @@
     <button type="button" id="btnAddBookmark" title="Bookmark this page — save to the bar below (⌘D / Ctrl+D)" aria-label="Bookmark this page">★</button>
   </div>
 
-  <button type="button" class="toolbar-icon-btn" onclick="toggleMenu()" title="Menu — settings, proxy, history, downloads, and more" aria-label="Open menu" style="position:relative; z-index:10;">
+  <button type="button" id="btnToolbarMenu" class="toolbar-icon-btn" onclick="toggleMenu()" title="Menu" aria-label="Open menu" aria-haspopup="true" style="position:relative; z-index:10;">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <circle cx="12" cy="5" r="1.5" fill="currentColor"/>
       <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
@@ -356,18 +647,30 @@
   <button type="button" class="find-btn" id="findClose" title="Close find bar and clear highlights (Esc)">✕</button>
 </div>
 
-<div id="bookmarkbar">
+<div id="bookmarkbar" class="bookmarkbar-empty">
   <div id="bookmarkbarItems"></div>
 </div>
 
-<div id="bookmarkModal">
+<div id="bookmarkManagerModal" role="dialog" aria-modal="true" aria-labelledby="bookmarkManagerTitle">
   <div class="dialog">
-    <h3 id="bookmarkModalTitle">Bookmark</h3>
+    <h2 id="bookmarkManagerTitle">Bookmark manager</h2>
+    <div id="bookmarkManagerList"></div>
+    <div class="dialog-actions">
+      <button type="button" class="primary" id="bookmarkManagerAdd">Add bookmark</button>
+      <button type="button" id="bookmarkManagerClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="bookmarkModal" role="dialog" aria-modal="true" aria-labelledby="bookmarkModalTitle">
+  <div class="dialog">
+    <h2 id="bookmarkModalTitle">Bookmark</h2>
+    <p id="bookmarkAutofillHint" role="note"></p>
     <label for="bookmarkEditTitle">Name</label>
-    <input type="text" id="bookmarkEditTitle" placeholder="Name" autocomplete="off" />
+    <input type="text" id="bookmarkEditTitle" name="bookmark-title" placeholder="Site name" autocomplete="off" />
     <label for="bookmarkEditUrl">URL</label>
-    <input type="text" id="bookmarkEditUrl" placeholder="https://… or bavarium://…" autocomplete="off" />
-    <div class="actions">
+    <input type="text" id="bookmarkEditUrl" name="bookmark-url" placeholder="https://example.com/page" autocomplete="off" />
+    <div class="dialog-actions">
       <button type="button" class="danger" id="bookmarkBtnRemove" style="display:none;" title="Remove this bookmark" aria-label="Remove bookmark">Remove</button>
       <button type="button" id="bookmarkBtnCancel" title="Close without saving" aria-label="Cancel">Cancel</button>
       <button type="button" class="primary" id="bookmarkBtnSave" title="Save bookmark to the bar" aria-label="Save bookmark">Save</button>
@@ -375,15 +678,64 @@
   </div>
 </div>
 
-<div id="menu" style="display:none; position:absolute; right:10px; top:50px; min-width:220px; background:#1e1e1e; color:#e8eaed; padding:6px 0; border:1px solid #444; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.45); z-index:1000;">
-  <div class="menu-item" data-bavarium="bavarium://settings" title="Open Settings in a tab" style="padding:10px 16px; cursor:pointer; font-size:14px;">Settings</div>
-  <div class="menu-item" data-bavarium="bavarium://proxy" title="Choose Ultraviolet or Scramjet and ports" style="padding:10px 16px; cursor:pointer; font-size:14px;">Proxy configuration</div>
-  <div class="menu-item" data-bavarium="bavarium://browsing" title="Homepage, search engine, proxy on/off" style="padding:10px 16px; cursor:pointer; font-size:14px;">Browsing/Searching</div>
-  <div class="menu-item" data-bavarium="bavarium://history" title="Browsing history and clear data" style="padding:10px 16px; cursor:pointer; font-size:14px;">History/Privacy</div>
-  <div class="menu-item" data-bavarium="bavarium://downloads" title="Download history and save location" style="padding:10px 16px; cursor:pointer; font-size:14px;">Download manager</div>
+<div id="menu" role="menu" aria-label="Browser menu" style="display:none; position:absolute; right:10px; top:50px; min-width:220px; background:#1e1e1e; color:#e8eaed; padding:6px 0; border:1px solid #444; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.45); z-index:1000;">
+  <div class="menu-item" role="menuitem" data-menu-action="settings">
+    <img class="menu-item-icon icon-light" src="assets/menu-icons/settings.png" width="18" height="18" alt="" aria-hidden="true" />
+    <span class="menu-item-label">Settings</span>
+  </div>
+  <div class="menu-item" role="menuitem" data-menu-action="history">
+    <img class="menu-item-icon icon-light" src="assets/menu-icons/history.png" width="18" height="18" alt="" aria-hidden="true" />
+    <span class="menu-item-label">History</span>
+  </div>
+  <div class="menu-item" role="menuitem" data-menu-action="bookmark-manager">
+    <img class="menu-item-icon icon-light" src="assets/menu-icons/bookmark-manager.png" width="18" height="18" alt="" aria-hidden="true" />
+    <span class="menu-item-label">Bookmark manager</span>
+  </div>
+  <div class="menu-item" role="menuitem" data-menu-action="downloads">
+    <img class="menu-item-icon icon-light" src="assets/menu-icons/downloads.png" width="18" height="18" alt="" aria-hidden="true" />
+    <span class="menu-item-label">Downloads</span>
+  </div>
+  <div class="menu-item" role="menuitem" data-menu-action="share-page">
+    <img class="menu-item-icon icon-light" src="assets/menu-icons/share-page.png" width="18" height="18" alt="" aria-hidden="true" />
+    <span class="menu-item-label">Share page</span>
+  </div>
+  <div class="menu-item" role="menuitem" data-menu-action="developer-tools">
+    <img class="menu-item-icon icon-light" src="assets/menu-icons/developer-tools.png" width="18" height="18" alt="" aria-hidden="true" />
+    <span class="menu-item-label">Developer tools</span>
+  </div>
+  <div class="menu-item" role="menuitem" data-menu-action="github-repo">
+    <img class="menu-item-icon" src="assets/menu-icons/github.png" width="18" height="18" alt="" aria-hidden="true" />
+    <span class="menu-item-label">GitHub repo</span>
+  </div>
 </div>
 
-<div id="views"></div>
+<div id="perfOverlay" hidden aria-hidden="true">
+  <div class="perf-title">Performance</div>
+  <div class="perf-row">
+    <canvas id="perfCanvasFps" width="72" height="28" aria-hidden="true"></canvas>
+    <div id="perfFpsText">
+      <span id="perfFpsLabel">Tab —</span>
+      <span id="perfUiFpsLabel" class="perf-ui-fps" style="display:none;"></span>
+      <span class="perf-fps-bands">
+        <span class="perf-fps-band low" id="perfFpsLow" title="Average low FPS (recent window)">↓ —</span>
+        <span class="perf-fps-band high" id="perfFpsHigh" title="Average high FPS (recent window)">↑ —</span>
+      </span>
+    </div>
+  </div>
+  <div class="perf-row">
+    <canvas id="perfCanvasNet" width="72" height="22" aria-hidden="true"></canvas>
+    <span id="perfNetLabel">↓ —  ↑ —</span>
+  </div>
+</div>
+
+<div id="pageColumn">
+  <div id="views"></div>
+  <webview
+    id="devtoolsHost"
+    partition="persist:bavarium-devtools"
+    webpreferences="contextIsolation=yes,sandbox=yes"
+  ></webview>
+</div>
 
 <script src="renderer.js"></script>
 

@@ -41,7 +41,9 @@
       font-weight: 500;
     }
     .nav-item {
-      display: block;
+      display: flex;
+      align-items: center;
+      gap: 12px;
       padding: 10px 20px;
       color: #9aa0a6;
       cursor: pointer;
@@ -50,6 +52,7 @@
       width: 100%;
       text-align: left;
       font: inherit;
+      line-height: 1.25;
     }
     .nav-item:hover {
       background: rgba(255,255,255,.06);
@@ -60,6 +63,26 @@
       background: rgba(138, 180, 248, .12);
       border-inline-start: 3px solid #8ab4f8;
       padding-inline-start: 17px;
+    }
+    .nav-item-icon {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      object-fit: contain;
+      pointer-events: none;
+      filter: invert(1) brightness(1.05);
+      opacity: 0.72;
+    }
+    .nav-item:hover .nav-item-icon,
+    .nav-item.active .nav-item-icon {
+      opacity: 0.95;
+    }
+    .nav-item.active .nav-item-icon {
+      filter: invert(0.72) sepia(0.4) saturate(2.8) hue-rotate(186deg) brightness(1.12);
+    }
+    .nav-item-label {
+      flex: 1;
+      min-width: 0;
     }
     main {
       flex: 1;
@@ -160,22 +183,131 @@
       text-align: center;
       color: #9aa0a6;
     }
-    #saveBtn {
+    #sitePermissionsList {
+      border: 1px solid #3c4043;
+      border-radius: 8px;
+      max-height: 360px;
+      overflow-y: auto;
+      background: #292a2d;
+    }
+    .site-perm-card {
+      padding: 12px 14px;
+      border-bottom: 1px solid #3c4043;
+    }
+    .site-perm-card:last-child { border-bottom: none; }
+    .site-perm-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .site-perm-host {
+      font-weight: 500;
+      color: #e8eaed;
+      word-break: break-all;
+    }
+    .site-perm-origin {
+      color: #9aa0a6;
+      font-size: 11px;
+      margin-top: 2px;
+      word-break: break-all;
+    }
+    .site-perm-grid {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) minmax(140px, 160px);
+      gap: 8px 12px;
+      align-items: center;
+    }
+    .site-perm-grid label {
+      margin: 0;
+      font-size: 12px;
+      color: #bdc1c6;
+    }
+    .site-perm-grid select {
+      max-width: none;
+      width: 100%;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    .site-perm-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .site-perm-add-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .site-perm-add-row input {
+      flex: 1;
+      min-width: 200px;
+      max-width: 420px;
+    }
+    #frameworkVersionsTable {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    #frameworkVersionsTable th,
+    #frameworkVersionsTable td {
+      border: 1px solid #3c4043;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    #frameworkVersionsTable th {
+      color: #9aa0a6;
+      font-weight: 500;
+      background: #292a2d;
+    }
+    #frameworkVersionsTable td:last-child {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      color: #e8eaed;
+    }
+    #frameworkUpdateResults {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px solid #3c4043;
+      border-radius: 8px;
+      background: #292a2d;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #bdc1c6;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      display: none;
+    }
+    #frameworkUpdateResults.is-visible {
+      display: block;
+    }
+    #saveStatus {
       position: fixed;
       bottom: 24px;
       right: 24px;
-      background: #1a73e8;
-      color: #fff;
-      border: none;
-      padding: 12px 24px;
-      border-radius: 24px;
-      font: inherit;
-      font-weight: 500;
-      cursor: pointer;
-      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+      margin: 0;
+      padding: 10px 18px;
+      border-radius: 20px;
+      font-size: 13px;
+      color: #81c995;
+      background: rgba(32, 33, 36, 0.92);
+      border: 1px solid #3c4043;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
       z-index: 100;
+      pointer-events: none;
+      min-width: 4em;
+      text-align: center;
     }
-    #saveBtn:hover { background: #1967d2; }
+    #saveBtn {
+      display: none;
+    }
     label.checkbox {
       display: flex;
       align-items: center;
@@ -304,7 +436,7 @@
       margin: 0 auto;
       padding: 28px 24px 80px;
     }
-    body.license-only-page #saveBtn {
+    body.license-only-page #saveStatus {
       display: none;
     }
     .license-prose {
@@ -371,10 +503,26 @@
   <aside class="sidebar">
     <h1>Settings</h1>
     <div class="sidebar-nav">
-      <button type="button" class="nav-item active" data-hash="proxy">Proxy configuration</button>
-      <button type="button" class="nav-item" data-hash="browsing">Browsing/Searching</button>
-      <button type="button" class="nav-item" data-hash="history">History/Privacy</button>
-      <button type="button" class="nav-item" data-hash="downloads">Downloads</button>
+      <button type="button" class="nav-item active" data-hash="proxy">
+        <img class="nav-item-icon" src="assets/settings-icons/proxy.png" width="18" height="18" alt="" aria-hidden="true" />
+        <span class="nav-item-label">Proxy configuration</span>
+      </button>
+      <button type="button" class="nav-item" data-hash="browsing">
+        <img class="nav-item-icon" src="assets/settings-icons/browsing.png" width="18" height="18" alt="" aria-hidden="true" />
+        <span class="nav-item-label">Browsing/Searching</span>
+      </button>
+      <button type="button" class="nav-item" data-hash="history">
+        <img class="nav-item-icon" src="assets/settings-icons/history-privacy.png" width="18" height="18" alt="" aria-hidden="true" />
+        <span class="nav-item-label">History/Privacy</span>
+      </button>
+      <button type="button" class="nav-item" data-hash="downloads">
+        <img class="nav-item-icon" src="assets/menu-icons/downloads.png" width="18" height="18" alt="" aria-hidden="true" />
+        <span class="nav-item-label">Downloads</span>
+      </button>
+      <button type="button" class="nav-item" data-hash="developer">
+        <img class="nav-item-icon icon-light" src="assets/menu-icons/developer-tools.png" width="18" height="18" alt="" aria-hidden="true" />
+        <span class="nav-item-label">Developer</span>
+      </button>
     </div>
     <p class="sidebar-version" id="appVersionLabel" aria-label="App version">v1.0b</p>
   </aside>
@@ -491,13 +639,17 @@
       <div class="field">
         <label for="homepageTrigger">Homepage / new tab</label>
         <div class="icon-select" id="homepageIconSelect" data-icon-select>
-          <input type="hidden" id="homepage" value="google" />
+          <input type="hidden" id="homepage" value="bavarium" />
           <button type="button" class="icon-select-trigger" id="homepageTrigger" aria-haspopup="listbox" aria-expanded="false">
-            <img class="icon-select-trigger-img" src="https://www.google.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
-            <span class="icon-select-label icon-select-trigger-text">Google</span>
+            <img class="icon-select-trigger-img" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%234fc3f7'/%3E%3Cstop offset='100%25' stop-color='%2326c6a0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ctext x='12' y='16' text-anchor='middle' font-family='monospace' font-size='11' fill='url(%23g)'%3EB%3C/text%3E%3C/svg%3E" width="20" height="20" alt="" decoding="async" />
+            <span class="icon-select-label icon-select-trigger-text">Bavarium</span>
             <span class="icon-select-chevron" aria-hidden="true">▾</span>
           </button>
           <div class="icon-select-panel" role="listbox" hidden>
+            <button type="button" class="icon-select-option" role="option" data-value="bavarium">
+              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%234fc3f7'/%3E%3Cstop offset='100%25' stop-color='%2326c6a0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ctext x='12' y='16' text-anchor='middle' font-family='monospace' font-size='11' fill='url(%23g)'%3EB%3C/text%3E%3C/svg%3E" width="20" height="20" alt="" decoding="async" />
+              <span class="icon-select-label">Bavarium (new tab page)</span>
+            </button>
             <button type="button" class="icon-select-option" role="option" data-value="google">
               <img src="https://www.google.com/favicon.ico" width="20" height="20" alt="" decoding="async" />
               <span class="icon-select-label">Google</span>
@@ -521,7 +673,7 @@
 
     <section id="section-privacy" class="section">
       <h2>History/Privacy</h2>
-      <p class="section-desc">Control whether visits are remembered and manage saved history.</p>
+      <p class="section-desc">Control whether visits are remembered, manage site permissions (location, notifications, camera, and more), and review saved history.</p>
 
       <div class="field">
         <label class="checkbox">
@@ -535,9 +687,27 @@
       </div>
 
       <div class="field">
+        <label>Site permissions</label>
+        <p class="field-hint">
+          Choose what sites may access (location, notifications, camera, clipboard, and similar).
+          “Ask every time” prompts when a site requests access. Rules apply to normal browsing tabs, not Incognito.
+          When the proxy is on, Bavarium maps permissions to the real site (e.g. <code>https://store.steampowered.com</code>), not <code>localhost</code>.
+          You can add a site manually with its normal URL if it has not appeared yet.
+        </p>
+        <div class="site-perm-add-row">
+          <input type="text" id="sitePermAddOrigin" placeholder="https://example.com" autocomplete="off" spellcheck="false" aria-label="Site URL or origin" />
+          <button type="button" class="btn secondary" id="sitePermAddBtn">Add site</button>
+        </div>
+        <div class="site-perm-toolbar">
+          <button type="button" class="btn secondary" id="clearAllSitePermissionsBtn">Reset all site permissions</button>
+        </div>
+        <div id="sitePermissionsList"></div>
+      </div>
+
+      <div class="field">
         <label>Reset browsing data</label>
         <p class="field-hint">
-          Removes saved browsing history, the download history list, bookmarks, and all site data for this profile
+          Removes saved browsing history, the download history list, site permission rules, bookmarks, and all site data for this profile
           (cookies, cache, local storage, service workers, and similar). Your settings on this page are kept.
           Signed-in sessions on sites will be signed out.
         </p>
@@ -597,6 +767,79 @@
           <button type="button" class="btn secondary" id="clearDownloadHistoryBtn">Clear download history</button>
         </div>
         <div id="downloadList"></div>
+      </div>
+    </section>
+
+    <section id="section-developer" class="section">
+      <h2>Developer</h2>
+      <p class="section-desc">Experimental options for updates, Chromium DevTools, and performance monitoring.</p>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="trackPreReleaseUpdates" />
+          Track pre-release updates
+        </label>
+        <p class="field-hint">When checking for framework updates, include beta/next release channels where available (npm dist-tags).</p>
+      </div>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="enableChromiumDevTools" />
+          Enable Chromium DevTools
+        </label>
+        <p class="field-hint">Allows Inspect Element in the page menu and Developer tools in the browser menu. Disable for a simpler browsing experience.</p>
+      </div>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="enablePerformanceGraph" />
+          Enable performance graph
+        </label>
+        <p class="field-hint">Shows a small overlay in the bottom-right of the browser window with FPS and approximate network download/upload rates.</p>
+      </div>
+
+      <div class="field">
+        <label>Frame rate</label>
+        <label class="checkbox">
+          <input type="checkbox" id="fpsLimitEnabled" />
+          Limit frame rate
+        </label>
+        <p class="field-hint" id="fpsDisplayHzHint">Primary display: — Hz</p>
+        <label class="checkbox" style="margin-top:10px;">
+          <input type="checkbox" id="fpsSyncDisplay" checked />
+          Match display refresh rate (VSync)
+        </label>
+        <p class="field-hint">Limits page animation FPS inside tabs (not the browser toolbar). The performance overlay shows <strong>Tab</strong> FPS for the active page; <strong>UI</strong> is the uncapped shell (~monitor refresh). Changing VSync requires a full restart of Bavarium.</p>
+        <label for="fpsLimit" style="margin-top:10px;">Max FPS</label>
+        <input
+          type="number"
+          id="fpsLimit"
+          min="1"
+          max="240"
+          step="1"
+          value="60"
+          inputmode="numeric"
+          style="max-width:120px;"
+        />
+        <p class="field-hint">Cannot exceed your display refresh rate (see above).</p>
+        <p class="field-hint" id="fpsEffectiveHint"></p>
+      </div>
+
+      <div class="field">
+        <label>Framework updates</label>
+        <p class="field-hint">Checks npm for newer versions of Electron, electron-builder, and other dependencies in this project (requires npm on your PATH).</p>
+        <button type="button" class="btn secondary" id="checkFrameworkUpdatesBtn">Check for framework updates</button>
+        <div id="frameworkUpdateResults" aria-live="polite"></div>
+      </div>
+
+      <div class="field">
+        <label>Installed frameworks</label>
+        <table id="frameworkVersionsTable">
+          <thead>
+            <tr><th>Framework</th><th>Version</th></tr>
+          </thead>
+          <tbody id="frameworkVersionsBody"></tbody>
+        </table>
       </div>
     </section>
 
@@ -665,7 +908,8 @@
     </section>
   </main>
 
-  <button type="button" id="saveBtn">Save</button>
+  <p id="saveStatus" aria-live="polite"></p>
+  <button type="button" id="saveBtn" hidden>Save</button>
   <script src="settings.js"></script>
 </body>
 </html>

@@ -1,10 +1,12 @@
 {
   "name": "bavarium-browser",
+  "productName": "Bavarium Browser",
   "version": "1.0.0-b",
   "bavariumDisplayVersion": "v1.0b",
-  "description": "Unblocked browsing with leading proxies and other features.",
+  "description": "Bavarium Browser",
   "main": "main.js",
   "scripts": {
+    "postinstall": "node scripts/patch-electron-win-metadata.cjs",
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
@@ -25,12 +27,16 @@
       {
         "from": "ultraviolet-app/node_modules",
         "to": "ultraviolet-app/node_modules",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "scramjet-app/node_modules",
         "to": "scramjet-app/node_modules",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "asarUnpack": [
@@ -41,13 +47,21 @@
       "category": "public.app-category.utilities",
       "target": [
         "dir"
-      ]
+      ],
+      "extendInfo": {
+        "CFBundleName": "Bavarium Browser",
+        "CFBundleDisplayName": "Bavarium Browser"
+      }
     },
     "win": {
       "target": [
         "nsis",
         "portable"
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     },
     "linux": {
       "target": [
@@ -57,6 +71,10 @@
   },
   "devDependencies": {
     "electron": "^41.1.1",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "rcedit": "^4.0.1"
+  },
+  "dependencies": {
+    "electron-native-share": "^0.1.1"
   }
 }

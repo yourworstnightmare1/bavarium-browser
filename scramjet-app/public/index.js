@@ -34,6 +34,43 @@ scramjet.init();
 
 const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
 
+function notifyBavariumPageMeta() {
+	try {
+		require("electron").ipcRenderer.sendToHost("bavarium-page-meta-changed");
+	} catch (_) {}
+}
+
+function hookProxyFrameNavigation(frameEl) {
+	if (!frameEl || frameEl.__bavariumNavHook) return;
+	frameEl.__bavariumNavHook = true;
+	frameEl.addEventListener("load", notifyBavariumPageMeta);
+	try {
+		const w = frameEl.contentWindow;
+		if (w && w.history && !w.__bavariumHistoryHook) {
+			w.__bavariumHistoryHook = true;
+			const push = w.history.pushState;
+			const replace = w.history.replaceState;
+			if (push) {
+				w.history.pushState = function () {
+					const r = push.apply(this, arguments);
+					notifyBavariumPageMeta();
+					return r;
+				};
+			}
+			if (replace) {
+				w.history.replaceState = function () {
+					const r = replace.apply(this, arguments);
+					notifyBavariumPageMeta();
+					return r;
+				};
+			}
+			w.addEventListener("popstate", notifyBavariumPageMeta);
+			w.addEventListener("hashchange", notifyBavariumPageMeta);
+		}
+	} catch (_) {}
+	setInterval(notifyBavariumPageMeta, 600);
+}
+
 /**
  * @param {string} rawInput address bar / search text or full URL
  */
@@ -61,7 +98,9 @@ async function startProxyNavigation(rawInput) {
 	const frame = scramjet.createFrame();
 	frame.frame.id = "sj-frame";
 	document.body.appendChild(frame.frame);
+	hookProxyFrameNavigation(frame.frame);
 	frame.go(url);
+	notifyBavariumPageMeta();
 }
 
 form.addEventListener("submit", async (event) => {

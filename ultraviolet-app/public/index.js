@@ -21,6 +21,23 @@ const error = document.getElementById("uv-error");
 const errorCode = document.getElementById("uv-error-code");
 const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
 
+function notifyBavariumPageMeta() {
+	try {
+		require("electron").ipcRenderer.sendToHost("bavarium-page-meta-changed");
+	} catch (_) {}
+}
+
+function hookProxyFrameNavigation(frameEl) {
+	if (!frameEl || frameEl.__bavariumNavHook) return;
+	frameEl.__bavariumNavHook = true;
+	frameEl.addEventListener("load", notifyBavariumPageMeta);
+	try {
+		const srcObs = new MutationObserver(notifyBavariumPageMeta);
+		srcObs.observe(frameEl, { attributes: true, attributeFilter: ["src"] });
+	} catch (_) {}
+	setInterval(notifyBavariumPageMeta, 600);
+}
+
 /**
  * @param {string} rawInput address bar / search text or full URL
  */
@@ -36,6 +53,7 @@ async function startProxyNavigation(rawInput) {
 	const url = search(rawInput, searchEngine.value);
 
 	const frame = document.getElementById("uv-frame");
+	hookProxyFrameNavigation(frame);
 	frame.style.display = "block";
 	const wispUrl =
 		(location.protocol === "https:" ? "wss" : "ws") +
@@ -48,6 +66,7 @@ async function startProxyNavigation(rawInput) {
 		]);
 	}
 	frame.src = __uv$config.prefix + __uv$config.encodeUrl(url);
+	notifyBavariumPageMeta();
 }
 
 form.addEventListener("submit", async (event) => {
