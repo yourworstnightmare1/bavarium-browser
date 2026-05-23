@@ -67,7 +67,8 @@
       "target": [
         "AppImage"
       ]
-    }
+    },
+    "npmRebuild": false
   },
   "devDependencies": {
     "electron": "^41.1.1",

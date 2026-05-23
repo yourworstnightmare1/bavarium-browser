@@ -7,7 +7,17 @@ Official repository: [https://github.com/yourworstnightmare1/bavarium-browser](h
 - **Git**
 - **Node.js 24 or newer** (matches the bundled Ultraviolet app’s `engines` field; npm is included). Install from [https://nodejs.org](https://nodejs.org).
 
-If `npm install` fails while building native addons, install platform build tools (e.g. Xcode Command Line Tools on macOS, Visual Studio Build Tools with C++ workload on Windows).
+**Windows installers** build without Visual Studio by default (`npmRebuild` is off in `package.json`). The optional `electron-native-share` addon is not compiled; **Share page** on Windows copies the URL to the clipboard instead of opening the system share sheet.
+
+To enable the Windows share sheet in packaged builds, install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **Desktop development with C++** workload, then run:
+
+```powershell
+.\scripts\build-bavarium.ps1
+```
+
+The build script detects VS and turns native rebuild on for that run.
+
+If `npm install` fails while building other native addons, install platform build tools (e.g. Xcode Command Line Tools on macOS).
 
 ## Clone the repository
 

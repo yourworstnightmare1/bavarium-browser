@@ -344,11 +344,30 @@ function Get-BuildTargets([string] $PlatformChoice, [bool] $OnMac, [bool] $OnWin
     }
 }
 
+function Test-HasWindowsNativeBuildTools {
+    if (-not (Test-IsWindows)) { return $false }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) { return $false }
+    $installPath = & $vswhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath 2>$null
+    return [bool]$installPath
+}
+
 function Get-ElectronBuilderArgs([bool] $BuildWin, [bool] $BuildMac) {
     $args = @()
 
     if ($BuildWin) {
         $args += '--win'
+        if (Test-HasWindowsNativeBuildTools) {
+            Write-Host '  Visual Studio C++ tools found - enabling native module rebuild for the Windows share sheet.' -ForegroundColor DarkGray
+            $args += '-c.npmRebuild=true'
+        }
+        else {
+            Write-Host '  No Visual Studio C++ build tools - skipping native rebuild. Share page uses clipboard on Windows.' -ForegroundColor Yellow
+            Write-Host '  Optional: install Desktop development with C++ from Visual Studio Build Tools for native share.' -ForegroundColor DarkGray
+            $args += '-c.npmRebuild=false'
+        }
     }
 
     if ($BuildMac) {
