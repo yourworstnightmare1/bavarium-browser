@@ -10,7 +10,7 @@ function applyVersionLabel() {
     const pkg = require(path.join(__dirname, "package.json"));
     el.textContent = pkg.bavariumDisplayVersion || `v${pkg.version}`;
   } catch {
-    el.textContent = "v1.0b";
+    el.textContent = "v2.0b";
   }
 }
 
