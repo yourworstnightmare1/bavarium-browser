@@ -2310,6 +2310,7 @@ function bavariumUrlToHash(url) {
       "history",
       "privacy",
       "downloads",
+      "about",
       "developer",
     ]);
     if (frag && valid.has(frag)) return frag;
@@ -2321,6 +2322,7 @@ function bavariumUrlToHash(url) {
       history: "history",
       privacy: "privacy",
       downloads: "downloads",
+      about: "about",
       developer: "developer",
     };
     if (hostMap[host]) return hostMap[host];
@@ -2362,6 +2364,7 @@ function settingsFileToBavariumDisplay(fileUrl) {
       history: "bavarium://history",
       privacy: "bavarium://privacy",
       downloads: "bavarium://downloads",
+      about: "bavarium://about",
       developer: "bavarium://developer",
       licenses: "bavarium://licenses",
       "licenses-scramjet": "bavarium://licenses/scramjet",

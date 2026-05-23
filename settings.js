@@ -179,6 +179,7 @@ const HASH_TO_NAV = {
   history: "privacy",
   privacy: "privacy",
   downloads: "downloads",
+  about: "about",
   developer: "developer",
 };
 
@@ -264,6 +265,9 @@ function showSection(hashId) {
   if (nav === "privacy") {
     void renderHistory();
     void renderSitePermissions();
+  }
+  if (nav === "about") {
+    void renderAboutBrowser();
   }
   if (nav === "developer") {
     void renderFrameworkVersions();
@@ -515,6 +519,7 @@ function applySettingsToForm() {
   syncFpsSettingsUi();
   void refreshFpsDisplayHint();
   syncProxyFieldsVisibility();
+  syncAboutPrereleaseUi();
 }
 
 function collectSettingsFromForm() {
@@ -737,6 +742,105 @@ async function renderSitePermissions() {
       await renderSitePermissions();
     });
   });
+}
+
+function syncAboutPrereleaseUi() {
+  const preBtn = document.getElementById("checkPrereleaseBuildsBtn");
+  if (!preBtn) return;
+  preBtn.hidden = currentSettings.trackPreReleaseUpdates !== true;
+}
+
+async function renderAboutBrowser() {
+  syncAboutPrereleaseUi();
+  const appNameEl = document.getElementById("aboutAppName");
+  const browserVerEl = document.getElementById("aboutBrowserVersion");
+  const electronEl = document.getElementById("aboutElectronVersion");
+  const commitRow = document.getElementById("aboutLatestCommitRow");
+  const commitCell = document.getElementById("aboutLatestCommit");
+  try {
+    const info = await ipcRenderer.invoke("get-about-browser-info");
+    if (appNameEl) appNameEl.textContent = info.appName || "—";
+    if (browserVerEl) {
+      browserVerEl.textContent = info.browserVersion || info.browserVersionRaw || "—";
+    }
+    if (electronEl) electronEl.textContent = info.electronVersion || "—";
+    if (commitRow && commitCell) {
+      if (info.trackPreReleaseUpdates) {
+        commitRow.hidden = false;
+        const parts = [];
+        if (info.localCommit) {
+          parts.push(`This build: ${info.localCommit}`);
+        }
+        if (info.latestCommit) {
+          const c = info.latestCommit;
+          const line = `${c.shortSha} (${c.branch})`;
+          parts.push(
+            info.latestCommit.htmlUrl
+              ? `<a href="${escapeHtml(c.htmlUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(line)}</a>`
+              : escapeHtml(line)
+          );
+        } else if (info.latestCommitError) {
+          parts.push(`Could not load: ${escapeHtml(info.latestCommitError)}`);
+        }
+        commitCell.innerHTML =
+          parts.length > 0 ? parts.join("<br>") : "—";
+      } else {
+        commitRow.hidden = true;
+        commitCell.textContent = "—";
+      }
+    }
+  } catch (e) {
+    if (appNameEl) appNameEl.textContent = "—";
+    if (browserVerEl) browserVerEl.textContent = "—";
+    if (electronEl) electronEl.textContent = "—";
+    if (commitRow) commitRow.hidden = true;
+    console.warn("get-about-browser-info:", e);
+  }
+}
+
+async function runBrowserUpdateCheck({ prerelease = false } = {}) {
+  const out = document.getElementById("browserUpdateResults");
+  const stableBtn = document.getElementById("checkBrowserUpdatesBtn");
+  const preBtn = document.getElementById("checkPrereleaseBuildsBtn");
+  const btn = prerelease ? preBtn : stableBtn;
+  if (!out) return;
+  if (btn) btn.disabled = true;
+  if (stableBtn && prerelease) stableBtn.disabled = true;
+  if (preBtn && !prerelease) preBtn.disabled = true;
+  out.classList.add("is-visible");
+  out.textContent = prerelease
+    ? "Checking GitHub for pre-release builds…"
+    : "Checking GitHub for updates…";
+  try {
+    const result = await ipcRenderer.invoke(
+      prerelease ? "check-prerelease-builds" : "check-browser-updates"
+    );
+    if (!result || !result.ok) {
+      out.textContent =
+        "Update check failed.\n" + (result && result.error ? result.error : "");
+      return;
+    }
+    if (!result.upToDate) {
+      const prompted = await ipcRenderer.invoke("show-browser-update-prompt", result);
+      out.textContent = prompted.prompted
+        ? prompted.action === "download"
+          ? "Opened the update download page."
+          : "Update available — dismissed for now."
+        : result.message || "Update available.";
+    } else {
+      out.textContent = result.message || "Check complete.";
+    }
+    if (prerelease && result.channel === "commit") {
+      void renderAboutBrowser();
+    }
+  } catch (e) {
+    out.textContent =
+      "Update check failed: " + (e && e.message ? e.message : String(e));
+  } finally {
+    if (btn) btn.disabled = false;
+    if (stableBtn) stableBtn.disabled = false;
+    if (preBtn) preBtn.disabled = false;
+  }
 }
 
 async function renderFrameworkVersions() {
@@ -998,6 +1102,29 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
+  const checkBrowserBtn = document.getElementById("checkBrowserUpdatesBtn");
+  if (checkBrowserBtn) {
+    checkBrowserBtn.addEventListener("click", () => {
+      void runBrowserUpdateCheck({ prerelease: false });
+    });
+  }
+  const checkPreBtn = document.getElementById("checkPrereleaseBuildsBtn");
+  if (checkPreBtn) {
+    checkPreBtn.addEventListener("click", () => {
+      void runBrowserUpdateCheck({ prerelease: true });
+    });
+  }
+  const trackPreReleaseEl = document.getElementById("trackPreReleaseUpdates");
+  if (trackPreReleaseEl) {
+    trackPreReleaseEl.addEventListener("change", () => {
+      currentSettings.trackPreReleaseUpdates = !!trackPreReleaseEl.checked;
+      syncAboutPrereleaseUi();
+      if (document.getElementById("section-about")?.classList.contains("active")) {
+        void renderAboutBrowser();
+      }
+    });
+  }
+
   const clearAllSitePermBtn = document.getElementById("clearAllSitePermissionsBtn");
   if (clearAllSitePermBtn) {
     clearAllSitePermBtn.addEventListener("click", async () => {
@@ -1079,6 +1206,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   ipcRenderer.on("settings-updated", (_e, payload) => {
     void syncSettingsFormFromMain(payload);
+    syncAboutPrereleaseUi();
+    if (document.getElementById("section-about")?.classList.contains("active")) {
+      void renderAboutBrowser();
+    }
     if (document.getElementById("section-developer")?.classList.contains("active")) {
       void renderFrameworkVersions();
     }

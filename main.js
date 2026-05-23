@@ -94,7 +94,7 @@ function broadcastToAllWindows(channel, ...args) {
   }
 }
 const path = require('path');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
 
@@ -1465,6 +1465,7 @@ function settingsFileToBavariumDisplayMenu(fileUrl) {
       history: 'bavarium://history',
       privacy: 'bavarium://privacy',
       downloads: 'bavarium://downloads',
+      about: 'bavarium://about',
       developer: 'bavarium://developer',
       licenses: 'bavarium://licenses',
       'licenses-scramjet': 'bavarium://licenses/scramjet',
@@ -2723,6 +2724,400 @@ ipcMain.on('change-proxy', (event, settings) => {
   })();
 });
 
+const BAVARIUM_GITHUB_REPO = 'yourworstnightmare1/bavarium-browser';
+const BAVARIUM_GITHUB_REPO_URL = `https://github.com/${BAVARIUM_GITHUB_REPO}`;
+
+let cachedAppPackageJson = null;
+
+function readAppPackageJson() {
+  if (cachedAppPackageJson) return cachedAppPackageJson;
+  try {
+    cachedAppPackageJson = JSON.parse(
+      fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')
+    );
+  } catch (_) {
+    cachedAppPackageJson = {
+      name: 'bavarium-browser',
+      productName: APP_DISPLAY_NAME,
+      version: '0.0.0',
+      bavariumDisplayVersion: 'v0.0.0',
+    };
+  }
+  return cachedAppPackageJson;
+}
+
+function normalizeVersionLabel(v) {
+  return String(v || '')
+    .replace(/^v/i, '')
+    .trim()
+    .toLowerCase();
+}
+
+function installedBrowserVersionLabels() {
+  const pkg = readAppPackageJson();
+  const labels = new Set();
+  if (pkg.version) labels.add(normalizeVersionLabel(pkg.version));
+  if (pkg.bavariumDisplayVersion) {
+    labels.add(normalizeVersionLabel(pkg.bavariumDisplayVersion));
+  }
+  return labels;
+}
+
+function releaseMatchesInstalled(tagName) {
+  const t = normalizeVersionLabel(tagName);
+  return installedBrowserVersionLabels().has(t);
+}
+
+function readLocalGitCommitShortSync() {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: __dirname,
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    const s = String(out || '').trim();
+    return s || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchGithubApiJson(apiPath) {
+  const url = apiPath.startsWith('https://')
+    ? apiPath
+    : `https://api.github.com${apiPath}`;
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'Bavarium-Browser',
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(
+      `GitHub API ${res.status}${body ? `: ${body.slice(0, 160)}` : ''}`
+    );
+  }
+  return res.json();
+}
+
+async function getLatestGithubRelease({ prereleaseOnly = false, stableOnly = false } = {}) {
+  const releases = await fetchGithubApiJson(
+    `/repos/${BAVARIUM_GITHUB_REPO}/releases?per_page=40`
+  );
+  if (!Array.isArray(releases)) return null;
+  for (const r of releases) {
+    if (r.draft) continue;
+    if (prereleaseOnly && !r.prerelease) continue;
+    if (stableOnly && r.prerelease) continue;
+    return r;
+  }
+  return null;
+}
+
+async function getLatestGithubCommitOnDefaultBranch() {
+  const repo = await fetchGithubApiJson(`/repos/${BAVARIUM_GITHUB_REPO}`);
+  const branch = (repo && repo.default_branch) || 'main';
+  const commit = await fetchGithubApiJson(
+    `/repos/${BAVARIUM_GITHUB_REPO}/commits/${encodeURIComponent(branch)}`
+  );
+  if (!commit || !commit.sha) return null;
+  return {
+    branch,
+    sha: commit.sha,
+    shortSha: commit.sha.slice(0, 7),
+    message:
+      (commit.commit && commit.commit.message) ||
+      '',
+    htmlUrl: commit.html_url || `${BAVARIUM_GITHUB_REPO_URL}/commit/${commit.sha}`,
+    date: (commit.commit && commit.commit.committer && commit.commit.committer.date) || null,
+  };
+}
+
+function pickReleaseDownloadUrl(release) {
+  if (!release) return `${BAVARIUM_GITHUB_REPO_URL}/releases`;
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  if (assets.length) {
+    const patterns =
+      process.platform === 'win32'
+        ? [/\.exe$/i, /\.msi$/i, /win/i, /windows/i]
+        : process.platform === 'darwin'
+          ? [/\.dmg$/i, /mac/i, /darwin/i]
+          : [/\.appimage$/i, /\.deb$/i, /linux/i];
+    for (const re of patterns) {
+      const hit = assets.find((a) => re.test(a.name || ''));
+      if (hit && hit.browser_download_url) return hit.browser_download_url;
+    }
+    const first = assets.find((a) => a.browser_download_url);
+    if (first && first.browser_download_url) return first.browser_download_url;
+  }
+  return release.html_url || `${BAVARIUM_GITHUB_REPO_URL}/releases`;
+}
+
+function formatGithubReleaseSummary(release) {
+  if (!release) return null;
+  return {
+    tag: release.tag_name || '',
+    name: release.name || release.tag_name || '',
+    prerelease: !!release.prerelease,
+    publishedAt: release.published_at || null,
+    htmlUrl: release.html_url || `${BAVARIUM_GITHUB_REPO_URL}/releases`,
+    downloadUrl: pickReleaseDownloadUrl(release),
+    body: release.body || '',
+  };
+}
+
+async function getAboutBrowserInfo() {
+  const pkg = readAppPackageJson();
+  const settings = mergedSettingsFromDisk();
+  const trackPreRelease = settings.trackPreReleaseUpdates === true;
+  const info = {
+    appName: pkg.productName || APP_DISPLAY_NAME,
+    browserVersion: pkg.bavariumDisplayVersion || pkg.version || '—',
+    browserVersionRaw: pkg.version || '—',
+    electronVersion: process.versions.electron || '—',
+    trackPreReleaseUpdates: trackPreRelease,
+    localCommit: null,
+    latestCommit: null,
+    repoUrl: BAVARIUM_GITHUB_REPO_URL,
+  };
+  if (trackPreRelease) {
+    info.localCommit = readLocalGitCommitShortSync();
+    try {
+      info.latestCommit = await getLatestGithubCommitOnDefaultBranch();
+    } catch (e) {
+      info.latestCommitError = e && e.message ? e.message : String(e);
+    }
+  }
+  return info;
+}
+
+async function checkBavariumBrowserUpdates({ prerelease = false } = {}) {
+  const installed = readAppPackageJson();
+  const currentLabel =
+    installed.bavariumDisplayVersion || installed.version || 'unknown';
+  try {
+    if (prerelease) {
+      const release = await getLatestGithubRelease({ prereleaseOnly: true });
+      if (release) {
+        const summary = formatGithubReleaseSummary(release);
+        const upToDate = releaseMatchesInstalled(summary.tag);
+        return {
+          ok: true,
+          channel: 'prerelease',
+          upToDate,
+          current: currentLabel,
+          release: summary,
+          downloadUrl: summary.downloadUrl,
+          message: upToDate
+            ? `You have the latest pre-release (${summary.tag}).`
+            : `Pre-release available: ${summary.tag}\n${summary.htmlUrl}`,
+        };
+      }
+      const commit = await getLatestGithubCommitOnDefaultBranch();
+      const local = readLocalGitCommitShortSync();
+      const upToDate =
+        local && commit && local.toLowerCase() === commit.shortSha.toLowerCase();
+      return {
+        ok: true,
+        channel: 'commit',
+        upToDate,
+        current: currentLabel,
+        commit,
+        localCommit: local,
+        downloadUrl: commit.htmlUrl,
+        message: upToDate
+          ? `Your build matches the latest commit on ${commit.branch} (${commit.shortSha}).`
+          : `Newer commits on ${commit.branch}: ${commit.shortSha}\n${commit.htmlUrl}`,
+      };
+    }
+
+    const release = await getLatestGithubRelease({ stableOnly: true });
+    if (!release) {
+      return {
+        ok: true,
+        upToDate: true,
+        current: currentLabel,
+        message: 'No stable GitHub releases found yet. Check pre-release builds if enabled.',
+      };
+    }
+    const summary = formatGithubReleaseSummary(release);
+    const upToDate = releaseMatchesInstalled(summary.tag);
+    return {
+      ok: true,
+      channel: 'stable',
+      upToDate,
+      current: currentLabel,
+      release: summary,
+      downloadUrl: summary.downloadUrl,
+      message: upToDate
+        ? `You're on the latest release (${summary.tag}).`
+        : `Update available: ${summary.tag}\n${summary.htmlUrl}`,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e && e.message ? e.message : String(e),
+      current: currentLabel,
+    };
+  }
+}
+
+let startupUpdateCheckDone = false;
+let updatePromptWin = null;
+let pendingUpdatePromptResolve = null;
+
+function buildUpdatePromptPayload(result, trackPreRelease) {
+  const current = result.current || 'unknown';
+  let downloadUrl =
+    result.downloadUrl || `${BAVARIUM_GITHUB_REPO_URL}/releases`;
+  const windowTitle = trackPreRelease
+    ? 'Pre-release update available'
+    : 'Update available';
+  const headline = trackPreRelease
+    ? 'A pre-release update is available for Bavarium Browser.'
+    : 'A new version of Bavarium Browser is available.';
+  let subtitle = `You are on ${current}.`;
+  let detailsBody = '';
+
+  if (result.channel === 'commit' && result.commit) {
+    const c = result.commit;
+    downloadUrl = c.htmlUrl || downloadUrl;
+    subtitle += ` A newer build is on ${c.branch} (${c.shortSha}).`;
+    detailsBody =
+      (c.message && String(c.message).trim()) ||
+      'Open GitHub to download the latest release or build from source.';
+  } else if (result.release) {
+    const r = result.release;
+    downloadUrl = result.downloadUrl || r.downloadUrl || r.htmlUrl;
+    subtitle += ` ${trackPreRelease ? 'Pre-release' : 'Version'} ${r.tag} is available.`;
+    if (r.name && r.name !== r.tag) {
+      subtitle += ` ${r.name}`;
+    }
+    const parts = [];
+    if (r.publishedAt) {
+      try {
+        parts.push(
+          `Published: ${new Date(r.publishedAt).toLocaleString()}`
+        );
+      } catch (_) {
+        parts.push(`Published: ${r.publishedAt}`);
+      }
+    }
+    if (r.htmlUrl) parts.push(r.htmlUrl);
+    const notes = (r.body && String(r.body).trim()) || '';
+    if (notes) {
+      if (parts.length) parts.push('');
+      parts.push(notes);
+    } else if (!parts.length) {
+      parts.push('No release notes provided on GitHub.');
+    }
+    detailsBody = parts.join('\n');
+  } else {
+    detailsBody =
+      result.message || 'A newer version is available on GitHub.';
+  }
+
+  return {
+    windowTitle,
+    headline,
+    subtitle,
+    detailsBody,
+    downloadUrl,
+    trackPreRelease,
+    downloadLabel: trackPreRelease
+      ? 'Download pre-release'
+      : 'Download update',
+  };
+}
+
+function showUpdateAvailablePrompt(payload) {
+  return new Promise((resolve) => {
+    if (updatePromptWin && !updatePromptWin.isDestroyed()) {
+      try {
+        updatePromptWin.close();
+      } catch (_) {}
+    }
+    pendingUpdatePromptResolve = resolve;
+    const parent = dialogParentWindow();
+    const iconPath = getAppIconPath();
+    updatePromptWin = new BrowserWindow({
+      width: 440,
+      height: 400,
+      minWidth: 360,
+      minHeight: 300,
+      maxHeight: 560,
+      resizable: true,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      parent: parent && !parent.isDestroyed() ? parent : undefined,
+      modal: !!(parent && !parent.isDestroyed()),
+      show: false,
+      autoHideMenuBar: true,
+      title: payload.windowTitle || 'Update available',
+      ...(iconPath ? { icon: iconPath } : {}),
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+        sandbox: false,
+      },
+    });
+    updatePromptWin.on('closed', () => {
+      updatePromptWin = null;
+      if (pendingUpdatePromptResolve) {
+        const done = pendingUpdatePromptResolve;
+        pendingUpdatePromptResolve = null;
+        done('later');
+      }
+    });
+    updatePromptWin.loadFile(path.join(__dirname, 'update-prompt.html'));
+    updatePromptWin.webContents.once('did-finish-load', () => {
+      if (!updatePromptWin || updatePromptWin.isDestroyed()) return;
+      updatePromptWin.webContents.send('update-prompt-init', payload);
+      updatePromptWin.show();
+      updatePromptWin.focus();
+    });
+  });
+}
+
+async function promptBrowserUpdateIfAvailable(result, trackPreRelease) {
+  if (!result || !result.ok || result.upToDate) {
+    return { prompted: false, action: 'none' };
+  }
+  const payload = buildUpdatePromptPayload(result, trackPreRelease);
+  const action = await showUpdateAvailablePrompt(payload);
+  if (action === 'download' && payload.downloadUrl) {
+    await shell.openExternal(payload.downloadUrl);
+  }
+  return { prompted: true, action };
+}
+
+async function maybePromptForStartupUpdate() {
+  const settings = mergedSettingsFromDisk();
+  const trackPreRelease = settings.trackPreReleaseUpdates === true;
+  let result;
+  try {
+    result = await checkBavariumBrowserUpdates({ prerelease: trackPreRelease });
+  } catch (e) {
+    console.warn('startup update check:', e);
+    return;
+  }
+  try {
+    await promptBrowserUpdateIfAvailable(result, trackPreRelease);
+  } catch (e) {
+    console.warn('startup update prompt:', e);
+  }
+}
+
+function scheduleStartupUpdateCheck() {
+  if (startupUpdateCheckDone) return;
+  startupUpdateCheckDone = true;
+  setTimeout(() => {
+    void maybePromptForStartupUpdate();
+  }, 2000);
+}
+
 // Save settings
 ipcMain.on('save-settings', (event, settings) => {
   const settingsPath = path.join(app.getPath('userData'), 'settings.json');
@@ -2744,6 +3139,36 @@ ipcMain.handle('get-display-refresh-rate', () => ({
 ipcMain.handle('get-frame-rate-settings', () => resolveFrameRateCap());
 
 ipcMain.handle('get-framework-versions', () => collectFrameworkVersions());
+
+ipcMain.handle('get-about-browser-info', () => getAboutBrowserInfo());
+
+ipcMain.handle('check-browser-updates', () =>
+  checkBavariumBrowserUpdates({ prerelease: false })
+);
+
+ipcMain.handle('check-prerelease-builds', () =>
+  checkBavariumBrowserUpdates({ prerelease: true })
+);
+
+ipcMain.on('update-prompt-choice', (_event, action) => {
+  if (!pendingUpdatePromptResolve) return;
+  const done = pendingUpdatePromptResolve;
+  pendingUpdatePromptResolve = null;
+  if (updatePromptWin && !updatePromptWin.isDestroyed()) {
+    try {
+      updatePromptWin.close();
+    } catch (_) {}
+  }
+  done(action === 'download' ? 'download' : 'later');
+});
+
+ipcMain.handle('show-browser-update-prompt', async (_event, result) => {
+  const settings = mergedSettingsFromDisk();
+  const trackPre =
+    settings.trackPreReleaseUpdates === true ||
+    (result && result.channel === 'prerelease');
+  return promptBrowserUpdateIfAvailable(result, trackPre);
+});
 
 ipcMain.handle('get-homepage-favorites', () => readHomepageFavoritesFile());
 
@@ -3396,6 +3821,7 @@ if (gotTheLock) {
     createWindow();
     createApplicationMenu();
     applyFrameRateSettingsToAll(mergedSettingsFromDisk());
+    scheduleStartupUpdateCheck();
   });
 
   app.on('window-all-closed', () => {
