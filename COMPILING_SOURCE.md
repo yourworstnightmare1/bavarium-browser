@@ -7,7 +7,12 @@ Official repository: [https://github.com/yourworstnightmare1/bavarium-browser](h
 - **Git**
 - **Node.js 24 or newer** (matches the bundled Ultraviolet app’s `engines` field; npm is included). Install from [https://nodejs.org](https://nodejs.org).
 
-If `npm install` fails while building native addons, install platform build tools (e.g. Xcode Command Line Tools on macOS, Visual Studio Build Tools with C++ workload on Windows).
+If `npm install` or `electron-builder` fails while building native addons, install platform build tools:
+
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`). On **Python 3.12+**, node-gyp also needs setuptools (distutils was removed): `python3 -m pip install setuptools`. The build script tries to install this automatically on macOS.
+- **Windows:** Visual Studio Build Tools with the **Desktop development with C++** workload.
+
+While `npm install` runs, PowerShell may print odd escape sequences (for example `^[[48;1R`); that is terminal noise, not a build error. Wait until npm finishes or shows an explicit `npm ERR!` line.
 
 ## Clone the repository
 
@@ -46,13 +51,24 @@ From the repository root:
 npm run dist
 ```
 
-On **Windows** (PowerShell 5.1+ or PowerShell 7), you can install dependencies and build Windows installers in one step (`-Platform All` builds Windows only; macOS artifacts require a Mac host):
+Install dependencies and build with the PowerShell script (needs **PowerShell 7** / `pwsh` on macOS: `brew install powershell`).
+
+From the **repository root**:
 
 ```powershell
 .\scripts\build-bavarium.ps1
 ```
 
-Options: `-Platform Windows|Mac|All`, `-SkipInstall`, `-Clean`, `-Force` (skip confirmation). macOS output is **`release/mac-arm64.zip`** (folder `mac-arm64/` with the `.app`, then zipped by the script). No DMG.
+On macOS you can also use:
+
+```bash
+chmod +x scripts/build-bavarium.sh   # once
+./scripts/build-bavarium.sh -Platform Mac -Force
+```
+
+Do **not** run only a quoted path like `'/path/to/build-bavarium.ps1'` — PowerShell prints that string and exits. Use `.\scripts\...` from the repo root, or `pwsh -File scripts/build-bavarium.ps1`, or the `.sh` wrapper above.
+
+Options: `-Platform Windows|Mac|All`, `-SkipInstall`, `-Clean`, `-Force` (skip confirmation). On a Mac, use **`-Platform Mac`** if you only need a macOS build (faster than `All`, which also cross-builds Windows). `-Platform All` on Windows builds Windows only; macOS artifacts require a Mac host. macOS output is **`release/mac-arm64.zip`** (folder `mac-arm64/` with the `.app`, then zipped by the script). No DMG.
 
 Artifacts are written under **`release/`** (see `package.json` and electron-builder configuration).
 
