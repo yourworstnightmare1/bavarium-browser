@@ -52,6 +52,8 @@ $script:BuildProgress = @{
     TotalWeight     = 0.0
     CurrentStepId   = ''
 }
+# Set in main: Write-Progress breaks Cursor/VS Code terminals (^[[16;1R etc.).
+$script:UseBuildProgress = $false
 
 function Initialize-BuildProgressPlan {
     param(
@@ -102,6 +104,8 @@ function Write-BuildProgress {
         [string] $Detail = ''
     )
 
+    if (-not $script:UseBuildProgress) { return }
+
     $step = Get-BuildProgressStep -StepId $StepId
     if (-not $step) { return }
 
@@ -131,7 +135,9 @@ function Complete-BuildProgressStep {
 }
 
 function Clear-BuildProgress {
-    Write-Progress -Activity $script:BuildProgress.Activity -Completed
+    if ($script:UseBuildProgress) {
+        Write-Progress -Activity $script:BuildProgress.Activity -Completed
+    }
 }
 
 function Invoke-CommandWithProgress {
@@ -286,21 +292,51 @@ function Assert-NodeVersion {
     Write-Host "Using Node $(node -v) and npm $(npm -v)"
 }
 
-function Get-NpmInstallStepPercent([string] $Line, [int] $Current) {
-    if ($Line -match '(\d+)%') { return [int]$Matches[1] }
-    if ($Line -match 'reify|fetch|audit|idealTree|buildDeps|added|up to date|postinstall|patch-package') {
-        return [Math]::Min(95, $Current + 2)
+function Ensure-PythonSetuptoolsForNodeGyp {
+    if (-not (Test-IsMacOS)) { return }
+
+    if (-not (Get-Command python3 -ErrorAction SilentlyContinue)) {
+        Write-Warning "python3 not on PATH; electron-builder may fail rebuilding electron-native-share. Install Xcode Command Line Tools."
+        return
     }
-    return $null
+
+    & python3 -c "import distutils" 2>$null
+    if ($LASTEXITCODE -eq 0) { return }
+
+    Write-Host "Python distutils missing (needed for node-gyp on Python 3.12+). Installing setuptools..." -ForegroundColor Yellow
+    & python3 -m pip install setuptools --user
+    if ($LASTEXITCODE -ne 0) {
+        throw @"
+node-gyp requires Python setuptools (distutils was removed in Python 3.12+).
+Run: python3 -m pip install setuptools
+Then re-run: .\scripts\build-bavarium.ps1
+"@
+    }
+
+    & python3 -c "import distutils" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "setuptools is installed but distutils is still unavailable. See COMPILING_SOURCE.md."
+    }
+    Write-Host "Python setuptools ready for native module rebuilds." -ForegroundColor DarkGray
 }
 
 function Invoke-NpmInstall([string] $Directory, [string] $Label, [string] $StepId) {
     Write-Step "npm install - $Label ($Directory)"
-    Invoke-CommandWithProgress -StepId $StepId -WorkingDirectory $Directory -OnOutputLine {
-        param($Line, $Current)
-        Get-NpmInstallStepPercent -Line $Line -Current $Current
-    } -Command {
+    Write-BuildProgress -StepId $StepId -StepPercent 0 -Detail 'Running'
+    # Avoid piping npm through Write-Progress (garbled escape codes like ^[[48;1R and wrong $LASTEXITCODE).
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    $prevDir = Get-Location
+    Set-Location -LiteralPath $Directory
+    try {
         npm install --progress=true
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm install failed (exit $LASTEXITCODE) in $Directory"
+        }
+    }
+    finally {
+        Set-Location -LiteralPath $prevDir.Path
+        $ProgressPreference = $prevProgress
     }
     Complete-BuildProgressStep -StepId $StepId
 }
@@ -432,16 +468,22 @@ function Invoke-ElectronBuilder([string] $RepoRoot, [string[]] $BuilderArgs, [st
     if (-not (Test-Path -LiteralPath $cli)) {
         throw "electron-builder not installed. Run without -SkipInstall, or run: npm install"
     }
-    $ebPercent = 0
-    Invoke-CommandWithProgress -StepId $StepId -WorkingDirectory $RepoRoot -OnOutputLine {
-        param($Line, $Current)
-        $pct = Get-ElectronBuilderStepPercent -Line $Line
-        if ($null -ne $pct) { return [Math]::Max($Current, $pct) }
-        if ([regex]::IsMatch($Line, '^\s*\u2022')) { return [Math]::Min(95, $Current + 1) }
-        return $null
-    } -Command {
+    Write-BuildProgress -StepId $StepId -StepPercent 0 -Detail 'Running'
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    $prevDir = Get-Location
+    Set-Location -LiteralPath $RepoRoot
+    try {
         node $cli @BuilderArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "electron-builder failed (exit $LASTEXITCODE)"
+        }
     }
+    finally {
+        Set-Location -LiteralPath $prevDir.Path
+        $ProgressPreference = $prevProgress
+    }
+    Write-Host "electron-builder finished." -ForegroundColor DarkGray
     Complete-BuildProgressStep -StepId $StepId
 }
 
@@ -466,6 +508,7 @@ if (-not $Force) {
 
 $onMac = Test-IsMacOS
 $onWin = Test-IsWindows
+$script:UseBuildProgress = $onWin
 
 Write-Host "Bavarium Browser build"
 Write-Host "  Repo:     $RepoRoot"
@@ -492,6 +535,7 @@ Initialize-BuildProgressPlan `
 Assert-Command node
 Assert-Command npm
 Assert-NodeVersion
+Ensure-PythonSetuptoolsForNodeGyp
 Complete-BuildProgressStep -StepId 'prepare'
 
 if (-not $SkipInstall) {
@@ -547,10 +591,16 @@ Clear-BuildProgress
 Write-Step 'Build finished'
 if (Test-Path $releaseDir) {
     Write-Host "Artifacts in: $releaseDir" -ForegroundColor Green
-    Get-ChildItem -LiteralPath $releaseDir -Recurse -File |
+    Get-ChildItem -LiteralPath $releaseDir -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -match '\.(exe|zip|AppImage|yml|blockmap)$' } |
-        Sort-Object FullName |
+        Sort-Object Name |
         ForEach-Object { Write-Host "  $($_.FullName)" }
+    if ($targets.BuildMac) {
+        $macZip = Join-Path $releaseDir 'mac-arm64.zip'
+        if (Test-Path -LiteralPath $macZip) {
+            Write-Host "  macOS app zip: $macZip" -ForegroundColor Green
+        }
+    }
 }
 else {
     Write-Warning "release/ directory not found; check electron-builder output above."
