@@ -38,6 +38,17 @@ body {
 	background-color: #111;
 }
 
+body.uv-active .logo-wrapper,
+body.uv-active .desc,
+body.uv-active #uv-form,
+body.uv-active footer {
+	display: none !important;
+}
+
+body.uv-active #uv-frame {
+	display: block !important;
+}
+
 #uv-error {
 	color: #ff6666 !important;
 	white-space: pre-wrap;

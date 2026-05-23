@@ -12,6 +12,10 @@ const { pathToFileURL } = require("url");
 let pendingBootstrapTab = null;
 let devtoolsHostWebContentsId = null;
 let devtoolsOpenForTabId = null;
+/** True while the user is editing the address bar (do not overwrite from webview sync). */
+let urlOmniboxUserEditing = false;
+/** Debounced UV shell hash updates per webview. */
+const uvShellNavByView = new WeakMap();
 
 function setAltMenuBarHeld(held) {
   if (process.platform === "darwin") {
@@ -123,14 +127,33 @@ const BAVARIUM_PAGE_META_WATCHER = `(function() {
 const guestPageMetaTimers = new Map();
 const guestPageMetaThrottle = new WeakMap();
 
-function injectBavariumLinkClickCapture(wc) {
-  if (!wc || wc.isDestroyed()) return;
-  wc.executeJavaScript(BAVARIUM_LINK_CLICK_PATCH, true).catch(() => {});
+/** Guest JS in a <webview> (webContents.fromId is not available in this renderer). */
+function webviewGuestExecuteJavaScript(view, code, userGesture = true) {
+  if (!view) return Promise.reject(new Error("no webview"));
+  if (typeof view.executeJavaScript === "function") {
+    return view.executeJavaScript(code, userGesture);
+  }
+  const id = view.getWebContentsId?.();
+  if (id == null) return Promise.reject(new Error("no guest id"));
+  const wc = webContents?.fromId?.(id);
+  if (!wc || wc.isDestroyed()) {
+    return Promise.reject(new Error("guest webContents unavailable"));
+  }
+  return wc.executeJavaScript(code, userGesture);
 }
 
-function injectPageMetaWatcher(wc) {
-  if (!wc || wc.isDestroyed()) return;
-  wc.executeJavaScript(BAVARIUM_PAGE_META_WATCHER, true).catch(() => {});
+function injectBavariumLinkClickCapture(view) {
+  if (!view) return;
+  webviewGuestExecuteJavaScript(view, BAVARIUM_LINK_CLICK_PATCH, true).catch(
+    () => {}
+  );
+}
+
+function injectPageMetaWatcher(view) {
+  if (!view) return;
+  webviewGuestExecuteJavaScript(view, BAVARIUM_PAGE_META_WATCHER, true).catch(
+    () => {}
+  );
 }
 
 function attachWebviewBavariumNavigation(view) {
@@ -224,17 +247,33 @@ function normalizeRemoteUrl(raw) {
   }
 }
 
-/** Real page URL/title from a proxy shell location (`localhost/?url=…`). */
-function guestPageMetaFromShellUrl(shellUrl) {
+/** Target site encoded in a local proxy shell URL (`?url=` or `#url=`). */
+function proxyShellTargetFromUrl(shellUrl) {
   try {
     const u = new URL(shellUrl);
-    if (
-      (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") ||
-      !u.searchParams.has("url")
-    ) {
+    if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
       return null;
     }
-    const inner = decodeURIComponent(u.searchParams.get("url"));
+    let inner = u.searchParams.get("url");
+    if (!inner && u.hash) {
+      const h = u.hash.replace(/^#/, "");
+      if (h.startsWith("url=")) {
+        inner = decodeURIComponent(h.slice(4));
+      }
+    }
+    return inner;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Real page URL/title from a proxy shell location (`localhost/?url=…` or `#url=…`). */
+function guestPageMetaFromShellUrl(shellUrl) {
+  try {
+    const inner = proxyShellTargetFromUrl(shellUrl);
+    if (!inner) {
+      return null;
+    }
     const innerHref = normalizeRemoteUrl(inner);
     if (!innerHref) return null;
     let origin = "";
@@ -276,6 +315,7 @@ function primeTabGuestPageFromDestination(te, destinationUrl) {
 
 function updateUrlBarForTab(te) {
   if (!te || !currentTab || currentTab.id !== te.id) return;
+  if (urlOmniboxUserEditing) return;
   const urlInput = document.getElementById("url");
   if (!urlInput) return;
   const canonical = normalizeRemoteUrl(te.guestPage?.url || "");
@@ -359,10 +399,12 @@ function wrapUrlForProxyIfNeeded(url, settings) {
       settings.proxyType === "ultraviolet"
         ? settings.uvPort || 8080
         : settings.scramjetPort || 3000;
-    // Ultraviolet: unique path per navigation so macOS webviews reload the shell.
-    const shellPath =
-      settings.proxyType === "ultraviolet" ? "/bavarium-nav/" : "/";
-    return `http://localhost:${port}${shellPath}?url=${encodeURIComponent(url)}`;
+    const portBase = `http://localhost:${port}`;
+    // Ultraviolet on macOS: hash routing survives shell reloads better than ?url= alone.
+    if (settings.proxyType === "ultraviolet") {
+      return `${portBase}/bavarium-nav/#url=${encodeURIComponent(url)}`;
+    }
+    return `${portBase}/?url=${encodeURIComponent(url)}`;
   }
   return url;
 }
@@ -454,13 +496,11 @@ function resolvedTargetUrlForStaleProxyTab(view, te) {
   if (fromGuest) return fromGuest;
   const raw = webviewDisplayUrl(view);
   if (!raw) return null;
-  try {
-    const u = new URL(raw);
-    if (u.searchParams.has("url")) {
-      const inner = normalizeRemoteUrl(decodeURIComponent(u.searchParams.get("url")));
-      if (inner) return inner;
-    }
-  } catch (_) {}
+  const fromShell = proxyShellTargetFromUrl(raw);
+  if (fromShell) {
+    const inner = normalizeRemoteUrl(fromShell);
+    if (inner) return inner;
+  }
   return normalizeRemoteUrl(cleanUrl(raw));
 }
 
@@ -599,6 +639,11 @@ function applyGuestPageToTab(te, page) {
   let title =
     page.title && String(page.title).trim() ? String(page.title).trim() : "";
   if (title && isProxyLandingTitle(title)) title = "";
+  if (title === "Error" && url) {
+    try {
+      title = new URL(url).hostname || title;
+    } catch (_) {}
+  }
   if (!title && url) {
     try {
       title = new URL(url).hostname;
@@ -959,24 +1004,31 @@ function newTab(url = null, options = {}) {
       const id = view.getWebContentsId();
       const te0 = tabEntryForView(view);
       if (te0) te0.guestWebContentsId = id;
-      const wc = webContents.fromId(id);
-      if (!wc || wc.isDestroyed()) return;
-      if (wc.__bavariumInternalNavHook) return;
-      wc.__bavariumInternalNavHook = true;
-      wc.on("will-navigate", (event, legacyUrl) => {
-        const navUrl =
-          (typeof legacyUrl === "string" && legacyUrl) ||
-          (event && typeof event.url === "string" ? event.url : "") ||
-          "";
-        if (navUrl.startsWith("bavarium://")) {
-          event.preventDefault();
-          handleInternal(navUrl, view);
-        }
-      });
-      injectBavariumLinkClickCapture(wc);
-      injectPageMetaWatcher(wc);
+      const wc = webContents?.fromId?.(id);
+      if (wc && !wc.isDestroyed() && !wc.__bavariumInternalNavHook) {
+        wc.__bavariumInternalNavHook = true;
+        wc.on("will-navigate", (event, legacyUrl) => {
+          const navUrl =
+            (typeof legacyUrl === "string" && legacyUrl) ||
+            (event && typeof event.url === "string" ? event.url : "") ||
+            "";
+          if (navUrl.startsWith("bavarium://")) {
+            event.preventDefault();
+            handleInternal(navUrl, view);
+          }
+        });
+      }
+      injectBavariumLinkClickCapture(view);
+      injectPageMetaWatcher(view);
       void injectFrameCapOnWebview(view);
       scheduleGuestTabPageMetaRefresh(view);
+      const settings = getSettings();
+      if (settings.proxyType === "ultraviolet" && viewLooksLikeProxyShell(view)) {
+        const inner = proxyShellTargetFromUrl(webviewDisplayUrl(view));
+        if (inner) {
+          scheduleUltravioletShellNavigation(view, inner);
+        }
+      }
     } catch (_) {}
   });
 
@@ -1013,6 +1065,7 @@ function newTab(url = null, options = {}) {
 
   view.addEventListener("did-navigate", (e) => {
     const te0 = tabEntryForView(view);
+    const settings = getSettings();
     if (te0) {
       if (viewLooksLikeProxyShell(view)) {
         const meta = guestPageMetaFromShellUrl(e.url);
@@ -1021,6 +1074,12 @@ function newTab(url = null, options = {}) {
           te0.fullTitle = meta.title || "";
         } else {
           te0.fullTitle = "";
+        }
+        if (settings.proxyType === "ultraviolet") {
+          const inner = proxyShellTargetFromUrl(e.url || "");
+          if (inner) {
+            scheduleUltravioletShellNavigation(view, inner);
+          }
         }
       } else {
         te0.guestPage = null;
@@ -1050,11 +1109,18 @@ function newTab(url = null, options = {}) {
 
   view.addEventListener("did-navigate-in-page", (e) => {
     const te0 = tabEntryForView(view);
+    const settings = getSettings();
     if (te0 && viewLooksLikeProxyShell(view)) {
       const meta = guestPageMetaFromShellUrl(e.url);
       if (meta) {
         te0.guestPage = meta;
         te0.fullTitle = meta.title || "";
+      }
+      if (settings.proxyType === "ultraviolet") {
+        const inner = proxyShellTargetFromUrl(e.url || "");
+        if (inner) {
+          scheduleUltravioletShellNavigation(view, inner);
+        }
       }
       refreshTabTooltip(te0);
     } else if (te0) {
@@ -1083,10 +1149,18 @@ function newTab(url = null, options = {}) {
 
   view.addEventListener("did-finish-load", () => {
     const te0 = tabEntryForView(view);
+    const settingsOnLoad = getSettings();
+    if (
+      settingsOnLoad.proxyType === "ultraviolet" &&
+      viewLooksLikeProxyShell(view)
+    ) {
+      const innerOnLoad = proxyShellTargetFromUrl(webviewDisplayUrl(view));
+      if (innerOnLoad) {
+        scheduleUltravioletShellNavigation(view, innerOnLoad);
+      }
+    }
     try {
-      const wcId = view.getWebContentsId();
-      const wc = webContents.fromId(wcId);
-      if (wc) injectPageMetaWatcher(wc);
+      injectPageMetaWatcher(view);
     } catch (_) {}
     let t = "";
     try {
@@ -2093,47 +2167,37 @@ function isLocalProxyShellHref(href) {
     if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
       return false;
     }
-    if (!u.searchParams.has("url")) return false;
     const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
-    return path === "/" || path === "/bavarium-nav";
+    const onShell = path === "/" || path === "/bavarium-nav";
+    if (!onShell) return false;
+    return u.searchParams.has("url") || (u.hash && u.hash.includes("url="));
   } catch (_) {
     return false;
   }
 }
 
-/** Push a new UV target into an already-loaded shell (macOS often skips shell reload). */
+/** Push a new UV target into an already-loaded shell (macOS often skips full reload). */
 function scheduleUltravioletShellNavigation(view, destinationUrl) {
   if (!view || !destinationUrl) return;
-  const payload = JSON.stringify(String(destinationUrl));
-  const js = `(function() {
-    var dest = ${payload};
-    function run() {
-      if (typeof window.bavariumStartProxyNavigation === "function") {
-        window.bavariumStartProxyNavigation(dest).catch(function() {});
-        return true;
-      }
-      return false;
-    }
-    if (!run()) {
-      window.addEventListener("load", function onLoad() {
-        window.removeEventListener("load", onLoad);
-        run();
-      });
-    }
-  })();`;
-  const inject = () => {
-    try {
-      const id = view.getWebContentsId();
-      const wc = webContents.fromId(id);
-      if (wc && !wc.isDestroyed()) {
-        wc.executeJavaScript(js, true).catch(() => {});
-      }
-    } catch (_) {}
-  };
-  inject();
-  setTimeout(inject, 80);
-  setTimeout(inject, 350);
-  setTimeout(inject, 900);
+  const dest = String(destinationUrl);
+  let state = uvShellNavByView.get(view);
+  if (!state) {
+    state = { dest: "", timer: null };
+    uvShellNavByView.set(view, state);
+  }
+  if (state.dest === dest && state.timer) return;
+  state.dest = dest;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    const payload = JSON.stringify(dest);
+    const js = `(function() {
+      var hash = "url=" + encodeURIComponent(${payload});
+      if (location.hash.replace(/^#/, "") === hash) return;
+      location.hash = hash;
+    })();`;
+    webviewGuestExecuteJavaScript(view, js, true).catch(() => {});
+  }, 80);
 }
 
 /**
@@ -2160,13 +2224,14 @@ function forceWebviewNavigation(view, href) {
             (curU.port || "") === (nextU.port || "") &&
             (curU.pathname || "/") === (nextU.pathname || "/");
           const innerChanged =
-            curU.searchParams.get("url") !== nextU.searchParams.get("url");
+            proxyShellTargetFromUrl(current) !== proxyShellTargetFromUrl(href);
           if (sameShell && !innerChanged && current !== href) {
             bust = false;
           }
         } catch (_) {}
       }
       if (bust || current === href) {
+        // Keep #url= in the hash; bust only adds a query param.
         nextU.searchParams.set("_bavarium_r", String(Date.now()));
         next = nextU.href;
       }
@@ -2318,15 +2383,8 @@ function webviewDisplayUrl(view) {
 function cleanUrl(url) {
   const pretty = internalPageToBavariumDisplay(url);
   if (pretty) return pretty;
-  try {
-    const u = new URL(url);
-    if (
-      (u.hostname === "localhost" || u.hostname === "127.0.0.1") &&
-      u.searchParams.has("url")
-    ) {
-      return decodeURIComponent(u.searchParams.get("url"));
-    }
-  } catch {}
+  const inner = proxyShellTargetFromUrl(url);
+  if (inner) return inner;
   return url;
 }
 
@@ -3116,12 +3174,24 @@ window.onload = async () => {
   });
 
   const urlInput = document.getElementById("url");
-  urlInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      go();
-    }
-  });
+  if (urlInput) {
+    urlInput.addEventListener("focus", () => {
+      urlOmniboxUserEditing = true;
+    });
+    urlInput.addEventListener("blur", () => {
+      urlOmniboxUserEditing = false;
+    });
+    urlInput.addEventListener("input", () => {
+      urlOmniboxUserEditing = true;
+    });
+    urlInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        urlOmniboxUserEditing = false;
+        go();
+      }
+    });
+  }
 
   ipcRenderer.on("bavarium-menu-action", (_e, action) => {
     if (typeof action !== "string") return;

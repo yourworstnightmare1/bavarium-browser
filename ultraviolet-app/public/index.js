@@ -1,4 +1,5 @@
 "use strict";
+
 /**
  * @type {HTMLFormElement}
  */
@@ -24,6 +25,9 @@ const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
 /** @type {string | null} */
 let lastProxiedTarget = null;
 
+/** Serialize overlapping navigations (Bavarium may trigger many in quick succession). */
+let proxyNavChain = Promise.resolve();
+
 function notifyBavariumPageMeta() {
 	try {
 		require("electron").ipcRenderer.sendToHost("bavarium-page-meta-changed");
@@ -42,45 +46,94 @@ function hookProxyFrameNavigation(frameEl) {
 }
 
 function deepLinkTargetFromLocation() {
-	return new URLSearchParams(location.search).get("url");
+	const fromQuery = new URLSearchParams(location.search).get("url");
+	if (fromQuery) return fromQuery;
+	const hash = (location.hash || "").replace(/^#/, "");
+	if (hash.startsWith("url=")) {
+		return decodeURIComponent(hash.slice(4));
+	}
+	return null;
+}
+
+function shellPathForHistory() {
+	const path =
+		location.pathname && location.pathname !== "/"
+			? location.pathname
+			: "/";
+	const hash = location.hash || "";
+	return path + hash;
 }
 
 /**
  * @param {string} rawInput address bar / search text or full URL
  */
-async function startProxyNavigation(rawInput) {
+function proxiedHrefForTarget(url) {
+	const proxiedPath = __uv$config.prefix + __uv$config.encodeUrl(url);
+	return new URL(proxiedPath, location.origin).href;
+}
+
+function frameShowsProxiedTarget(frame, url) {
+	if (!frame || !frame.src || frame.src === "about:blank") return false;
+	const targetHref = proxiedHrefForTarget(url);
+	if (frame.src === targetHref) return true;
 	try {
-		await registerSW();
-	} catch (err) {
-		error.textContent = "Failed to register service worker.";
-		errorCode.textContent = err.toString();
-		throw err;
+		const path = __uv$config.prefix + __uv$config.encodeUrl(url);
+		return frame.src.endsWith(path);
+	} catch (_) {
+		return false;
 	}
+}
 
-	const url = search(rawInput, searchEngine.value);
-	lastProxiedTarget = url;
+async function startProxyNavigation(rawInput) {
+	const run = async () => {
+		try {
+			await registerSW();
+		} catch (err) {
+			error.textContent = "Failed to register service worker.";
+			errorCode.textContent = err.toString();
+			throw err;
+		}
 
-	const frame = document.getElementById("uv-frame");
-	if (!frame) return;
-	hookProxyFrameNavigation(frame);
-	frame.style.display = "block";
-	const wispUrl =
-		(location.protocol === "https:" ? "wss" : "ws") +
-		"://" +
-		location.host +
-		"/wisp/";
-	if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
-		await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
-	}
-	const proxied = __uv$config.prefix + __uv$config.encodeUrl(url);
-	// Reset the persistent iframe so a new target cannot keep showing the previous site
-	// (macOS Electron webviews often skip iframe updates when only the shell ?url= changes).
-	if (frame.src && frame.src !== "about:blank" && frame.src !== proxied) {
-		frame.src = "about:blank";
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	}
-	frame.src = proxied;
-	notifyBavariumPageMeta();
+		const url = search(rawInput, searchEngine.value);
+		const frame = document.getElementById("uv-frame");
+		if (!frame) {
+			return;
+		}
+
+		if (lastProxiedTarget === url && frameShowsProxiedTarget(frame, url)) {
+			document.body.classList.add("uv-active");
+			return;
+		}
+
+		lastProxiedTarget = url;
+		hookProxyFrameNavigation(frame);
+		frame.style.display = "block";
+		document.body.classList.add("uv-active");
+		const wispUrl =
+			(location.protocol === "https:" ? "wss" : "ws") +
+			"://" +
+			location.host +
+			"/wisp/";
+		if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
+			await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
+		}
+		const proxiedHref = proxiedHrefForTarget(url);
+		if (
+			frame.src &&
+			frame.src !== "about:blank" &&
+			!frameShowsProxiedTarget(frame, url)
+		) {
+			frame.src = "about:blank";
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		if (!frameShowsProxiedTarget(frame, url)) {
+			frame.src = proxiedHref;
+		}
+		notifyBavariumPageMeta();
+	};
+
+	proxyNavChain = proxyNavChain.then(run, run);
+	return proxyNavChain;
 }
 
 /** Called from Bavarium renderer without reloading this shell (macOS UV fix). */
@@ -92,13 +145,20 @@ async function runDeepLinkNavigation() {
 	address.value = deepLink;
 	await startProxyNavigation(deepLink);
 	if (window.history?.replaceState) {
-		const path =
-			location.pathname && location.pathname !== "/"
-				? location.pathname
-				: "/";
-		window.history.replaceState({}, "", path);
+		window.history.replaceState({}, "", shellPathForHistory());
 	}
 	return true;
+}
+
+function installBavariumHashNavigation() {
+	if (window.__bavariumUvHashHook) return;
+	window.__bavariumUvHashHook = true;
+	window.addEventListener("hashchange", () => {
+		runDeepLinkNavigation().catch((err) => {
+			error.textContent = "Navigation failed.";
+			errorCode.textContent = err?.stack || String(err);
+		});
+	});
 }
 
 form.addEventListener("submit", async (event) => {
@@ -109,6 +169,8 @@ form.addEventListener("submit", async (event) => {
 		/* surfaced in startProxyNavigation */
 	}
 });
+
+installBavariumHashNavigation();
 
 runDeepLinkNavigation().catch((err) => {
 	error.textContent = "Navigation failed.";
