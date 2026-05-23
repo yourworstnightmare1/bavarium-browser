@@ -21,6 +21,9 @@ const error = document.getElementById("uv-error");
 const errorCode = document.getElementById("uv-error-code");
 const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
 
+/** @type {string | null} */
+let lastProxiedTarget = null;
+
 function notifyBavariumPageMeta() {
 	try {
 		require("electron").ipcRenderer.sendToHost("bavarium-page-meta-changed");
@@ -38,6 +41,10 @@ function hookProxyFrameNavigation(frameEl) {
 	setInterval(notifyBavariumPageMeta, 600);
 }
 
+function deepLinkTargetFromLocation() {
+	return new URLSearchParams(location.search).get("url");
+}
+
 /**
  * @param {string} rawInput address bar / search text or full URL
  */
@@ -51,8 +58,10 @@ async function startProxyNavigation(rawInput) {
 	}
 
 	const url = search(rawInput, searchEngine.value);
+	lastProxiedTarget = url;
 
 	const frame = document.getElementById("uv-frame");
+	if (!frame) return;
 	hookProxyFrameNavigation(frame);
 	frame.style.display = "block";
 	const wispUrl =
@@ -61,12 +70,35 @@ async function startProxyNavigation(rawInput) {
 		location.host +
 		"/wisp/";
 	if ((await connection.getTransport()) !== "/epoxy/index.mjs") {
-		await connection.setTransport("/epoxy/index.mjs", [
-			{ wisp: wispUrl },
-		]);
+		await connection.setTransport("/epoxy/index.mjs", [{ wisp: wispUrl }]);
 	}
-	frame.src = __uv$config.prefix + __uv$config.encodeUrl(url);
+	const proxied = __uv$config.prefix + __uv$config.encodeUrl(url);
+	// Reset the persistent iframe so a new target cannot keep showing the previous site
+	// (macOS Electron webviews often skip iframe updates when only the shell ?url= changes).
+	if (frame.src && frame.src !== "about:blank" && frame.src !== proxied) {
+		frame.src = "about:blank";
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	frame.src = proxied;
 	notifyBavariumPageMeta();
+}
+
+/** Called from Bavarium renderer without reloading this shell (macOS UV fix). */
+window.bavariumStartProxyNavigation = startProxyNavigation;
+
+async function runDeepLinkNavigation() {
+	const deepLink = deepLinkTargetFromLocation();
+	if (!deepLink) return false;
+	address.value = deepLink;
+	await startProxyNavigation(deepLink);
+	if (window.history?.replaceState) {
+		const path =
+			location.pathname && location.pathname !== "/"
+				? location.pathname
+				: "/";
+		window.history.replaceState({}, "", path);
+	}
+	return true;
 }
 
 form.addEventListener("submit", async (event) => {
@@ -78,14 +110,14 @@ form.addEventListener("submit", async (event) => {
 	}
 });
 
-const deepLink = new URLSearchParams(location.search).get("url");
-if (deepLink) {
-	address.value = deepLink;
-	startProxyNavigation(deepLink).catch((err) => {
+runDeepLinkNavigation().catch((err) => {
+	error.textContent = "Navigation failed.";
+	errorCode.textContent = err?.stack || String(err);
+});
+
+window.addEventListener("pageshow", () => {
+	runDeepLinkNavigation().catch((err) => {
 		error.textContent = "Navigation failed.";
 		errorCode.textContent = err?.stack || String(err);
 	});
-	if (window.history?.replaceState) {
-		window.history.replaceState({}, "", location.pathname || "/");
-	}
-}
+});

@@ -155,7 +155,19 @@ let port = parseInt(process.env.PORT || "");
 
 if (isNaN(port)) port = 8080;
 
-fastify.listen({
-	port: port,
-	host: "0.0.0.0",
-});
+fastify
+	.listen({
+		port: port,
+		host: "0.0.0.0",
+	})
+	.catch((err) => {
+		if (err && err.code === "EADDRINUSE") {
+			console.error(
+				`Scramjet: port ${port} is already in use. Close the other program or pick another port in Bavarium Settings.`
+			);
+			process.exit(1);
+			return;
+		}
+		console.error(err);
+		process.exit(1);
+	});

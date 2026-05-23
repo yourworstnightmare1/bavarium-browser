@@ -85,6 +85,11 @@ async function startProxyNavigation(rawInput) {
 
 	const url = search(rawInput, searchEngine.value);
 
+	const existingFrame = document.getElementById("sj-frame");
+	if (existingFrame) {
+		existingFrame.remove();
+	}
+
 	const wispUrl =
 		(location.protocol === "https:" ? "wss" : "ws") +
 		"://" +

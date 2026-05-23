@@ -306,11 +306,12 @@ function applyPortCheckResult(el, r, proxyLabel) {
     return;
   }
   if (r.inUse) {
-    setPortStatusLine(
-      el,
-      "Port is already in use — choose another port or stop the other program.",
-      "bad"
-    );
+    let msg =
+      "Port is already in use — choose another port or stop the other program.";
+    if (r.suggestedPort != null && r.suggestedPort !== r.port) {
+      msg += ` Try ${r.suggestedPort} (next available).`;
+    }
+    setPortStatusLine(el, msg, "bad");
     return;
   }
   setPortStatusLine(el, "Port is available.", "ok");
@@ -1065,9 +1066,51 @@ window.addEventListener("DOMContentLoaded", async () => {
     void renderDownloads();
   });
 
-  ipcRenderer.on("settings-updated", () => {
+  async function syncSettingsFormFromMain(payload) {
+    if (payload && typeof payload === "object") {
+      currentSettings = payload;
+    } else {
+      await loadSettingsFromMain();
+    }
+    applySettingsToForm();
+    schedulePortStatusCheck();
+    updateLicensePortLinks();
+  }
+
+  ipcRenderer.on("settings-updated", (_e, payload) => {
+    void syncSettingsFormFromMain(payload);
     if (document.getElementById("section-developer")?.classList.contains("active")) {
       void renderFrameworkVersions();
+    }
+  });
+
+  ipcRenderer.on("proxy-port-state", (_e, state) => {
+    if (!state || typeof state !== "object") return;
+    if (state.settings && typeof state.settings === "object") {
+      currentSettings = state.settings;
+      applySettingsToForm();
+      schedulePortStatusCheck();
+      updateLicensePortLinks();
+    }
+    if (state.status === "failed") {
+      setSaveStatus(
+        state.message ||
+          `Proxy failed on port ${state.port ?? "?"}. Pick another port below.`
+      );
+      setPortStatusLine(
+        document.getElementById(
+          state.proxyType === "scramjet" ? "scramjetPortStatus" : "uvPortStatus"
+        ),
+        state.message || `Port ${state.port} failed — try the next available port.`,
+        "bad"
+      );
+    } else if (state.status === "relocated") {
+      setSaveStatus(
+        state.message || `Proxy is using port ${state.port} (port field updated).`
+      );
+      schedulePortStatusCheck();
+    } else if (state.status === "running") {
+      schedulePortStatusCheck();
     }
   });
 

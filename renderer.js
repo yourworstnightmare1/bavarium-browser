@@ -359,7 +359,10 @@ function wrapUrlForProxyIfNeeded(url, settings) {
       settings.proxyType === "ultraviolet"
         ? settings.uvPort || 8080
         : settings.scramjetPort || 3000;
-    return `http://localhost:${port}/?url=${encodeURIComponent(url)}`;
+    // Ultraviolet: unique path per navigation so macOS webviews reload the shell.
+    const shellPath =
+      settings.proxyType === "ultraviolet" ? "/bavarium-nav/" : "/";
+    return `http://localhost:${port}${shellPath}?url=${encodeURIComponent(url)}`;
   }
   return url;
 }
@@ -492,7 +495,7 @@ function refreshStaleProxyTabIfNeeded(te) {
   te.guestPage = null;
   te.fullTitle = "";
   try {
-    te.view.src = newSrc;
+    forceWebviewNavigation(te.view, newSrc);
   } catch (_) {
     return false;
   }
@@ -1632,7 +1635,10 @@ function navigateCurrentTab(rawInput) {
   }
 
   if (te && te.view) {
-    te.view.src = url;
+    forceWebviewNavigation(te.view, url);
+    if (settings.proxyType === "ultraviolet") {
+      scheduleUltravioletShellNavigation(te.view, destination);
+    }
     scheduleGuestTabPageMetaRefresh(te.view);
   }
 }
@@ -2081,6 +2087,60 @@ function wrappedReloadUrlForTab(te, settings) {
   return null;
 }
 
+function isLocalProxyShellHref(href) {
+  try {
+    const u = new URL(href);
+    if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
+      return false;
+    }
+    if (!u.searchParams.has("url")) return false;
+    const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+    return path === "/" || path === "/bavarium-nav";
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Push a new UV target into an already-loaded shell (macOS often skips shell reload). */
+function scheduleUltravioletShellNavigation(view, destinationUrl) {
+  if (!view || !destinationUrl) return;
+  const payload = JSON.stringify(String(destinationUrl));
+  const js = `(function() {
+    var dest = ${payload};
+    function run() {
+      if (typeof window.bavariumStartProxyNavigation === "function") {
+        window.bavariumStartProxyNavigation(dest).catch(function() {});
+        return true;
+      }
+      return false;
+    }
+    if (!run()) {
+      window.addEventListener("load", function onLoad() {
+        window.removeEventListener("load", onLoad);
+        run();
+      });
+    }
+  })();`;
+  const inject = () => {
+    try {
+      const id = view.getWebContentsId();
+      const wc = webContents.fromId(id);
+      if (wc && !wc.isDestroyed()) {
+        wc.executeJavaScript(js, true).catch(() => {});
+      }
+    } catch (_) {}
+  };
+  inject();
+  setTimeout(inject, 80);
+  setTimeout(inject, 350);
+  setTimeout(inject, 900);
+}
+
+/**
+ * Assign webview.src in a way that actually reloads on macOS when only the proxy
+ * ?url= target changes (same localhost shell — otherwise the old site stays visible
+ * while the address bar shows the new destination).
+ */
 function forceWebviewNavigation(view, href) {
   if (!view || !href) return;
   let current = "";
@@ -2088,13 +2148,33 @@ function forceWebviewNavigation(view, href) {
     current = webviewDisplayUrl(view);
   } catch (_) {}
   let next = href;
-  if (current === href) {
-    try {
-      const u = new URL(href);
-      u.searchParams.set("_bavarium_r", String(Date.now()));
-      next = u.href;
-    } catch (_) {}
-  }
+  try {
+    const nextU = new URL(href);
+    if (isLocalProxyShellHref(href)) {
+      let bust = true;
+      if (current) {
+        try {
+          const curU = new URL(current);
+          const sameShell =
+            curU.hostname === nextU.hostname &&
+            (curU.port || "") === (nextU.port || "") &&
+            (curU.pathname || "/") === (nextU.pathname || "/");
+          const innerChanged =
+            curU.searchParams.get("url") !== nextU.searchParams.get("url");
+          if (sameShell && !innerChanged && current !== href) {
+            bust = false;
+          }
+        } catch (_) {}
+      }
+      if (bust || current === href) {
+        nextU.searchParams.set("_bavarium_r", String(Date.now()));
+        next = nextU.href;
+      }
+    } else if (current === href) {
+      nextU.searchParams.set("_bavarium_r", String(Date.now()));
+      next = nextU.href;
+    }
+  } catch (_) {}
   view.src = next;
 }
 
@@ -2112,6 +2192,17 @@ async function refresh() {
 
   if (newSrc) {
     forceWebviewNavigation(te.view, newSrc);
+    if (settings.proxyType === "ultraviolet") {
+      try {
+        const u = new URL(newSrc);
+        if (u.searchParams.has("url")) {
+          scheduleUltravioletShellNavigation(
+            te.view,
+            decodeURIComponent(u.searchParams.get("url"))
+          );
+        }
+      } catch (_) {}
+    }
     scheduleGuestTabPageMetaRefresh(te.view);
     if (currentTab && currentTab.id === te.id) {
       try {
@@ -3215,7 +3306,7 @@ window.onload = async () => {
   });
 
   ipcRenderer.on("settings-updated", (_e, settings) => {
-    applySettingsPayload(settings);
+    applySettingsPayload(settings || undefined);
     if (currentTab) {
       refreshStaleProxyTabIfNeeded(currentTab);
     }
@@ -3262,6 +3353,12 @@ window.onload = async () => {
         } catch (_) {}
       }
     });
+  });
+
+  ipcRenderer.on("proxy-port-state", (_e, state) => {
+    if (state && state.settings) {
+      applySettingsPayload(state.settings);
+    }
   });
 
   ipcRenderer.on("proxy-switched", () => {

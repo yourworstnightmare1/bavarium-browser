@@ -80,6 +80,11 @@ app.get("/LICENSE", async (req, res) => {
 
 // Load our publicPath first and prioritize it over UV.
 app.use(express.static(publicDir));
+
+// Bavarium shell navigations use this path so macOS webviews reload when ?url= changes.
+app.get(["/bavarium-nav", "/bavarium-nav/"], (_req, res) => {
+	res.sendFile(join(publicDir, "index.html"));
+});
 // Load vendor files last.
 // The vendor's uv.config.js won't conflict with our uv.config.js inside the publicPath directory.
 app.use("/uv/", express.static(uvPath));
@@ -135,6 +140,17 @@ function shutdown() {
 	server.close();
 	process.exit(0);
 }
+
+server.on("error", (err) => {
+	if (err && err.code === "EADDRINUSE") {
+		console.error(
+			`Ultraviolet: port ${port} is already in use. Close the other program or pick another port in Bavarium Settings.`
+		);
+		process.exit(1);
+		return;
+	}
+	throw err;
+});
 
 server.listen({
 	port,

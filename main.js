@@ -398,6 +398,10 @@ const GUEST_PICK_LINK_REMOTE_AT_POINT = `(function(x, y) {
 })`;
 
 let currentProxyProcess = null;
+/** Port the spawned proxy child was started on (null if not running). */
+let currentProxyListenPort = null;
+/** @type {'ultraviolet' | 'scramjet' | null} */
+let currentProxyKind = null;
 let pendingBavariumLaunchUrl = null;
 
 const NODE = process.execPath;
@@ -677,12 +681,6 @@ function startProxy(type, port) {
     console.error(`Proxy (${type}) spawn error:`, err);
   });
 
-  child.on('exit', (code, signal) => {
-    if (code != null && code !== 0) {
-      console.error(`Proxy (${type}) exited with code ${code}`, signal || '');
-    }
-  });
-
   return child;
 }
 
@@ -692,25 +690,257 @@ function stopProxy() {
     currentProxyProcess.kill();
     currentProxyProcess = null;
   }
+  currentProxyListenPort = null;
+  currentProxyKind = null;
+}
+
+function proxyChildIsRunning() {
+  return !!(currentProxyProcess && currentProxyProcess.exitCode == null);
+}
+
+function defaultPortForProxyType(proxyType) {
+  return proxyType === 'scramjet' ? 3000 : 8080;
+}
+
+/**
+ * First free TCP port on 127.0.0.1 starting at preferredPort (up to maxAttempts).
+ * @returns {Promise<number | null>}
+ */
+async function findAvailableListenPort(preferredPort, maxAttempts = 50) {
+  const base = parseInt(String(preferredPort), 10);
+  if (!Number.isFinite(base) || base < 1 || base > 65535) {
+    return null;
+  }
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidate = base + i;
+    if (candidate > 65535) break;
+    const result = await checkPortInUse(candidate);
+    if (!result.inUse) return candidate;
+  }
+  return null;
+}
+
+function delayMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function broadcastProxyPortState(payload) {
+  const merged = mergedSettingsFromDisk();
+  broadcastToAllWindows('proxy-port-state', {
+    ...payload,
+    settings: merged,
+  });
+  broadcastToAllWindows('settings-updated', merged);
+}
+
+function persistProxyPortInSettings(proxyType, port, options = {}) {
+  const { notify = true } = options;
+  const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+  let s = {};
+  try {
+    if (fs.existsSync(settingsPath)) {
+      s = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    }
+  } catch (_) {}
+  if (proxyType === 'scramjet') {
+    s.scramjetPort = String(port);
+  } else {
+    s.uvPort = String(port);
+  }
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2));
+  } catch (err) {
+    console.error('persistProxyPortInSettings:', err);
+  }
+  if (notify) {
+    broadcastProxyPortState({
+      status: 'relocated',
+      proxyType,
+      port,
+      message: `Proxy port updated to ${port}.`,
+    });
+  }
+}
+
+function attachProxyExitRecovery(child, proxyType, boundPort, startedAt) {
+  child.on('exit', (code, signal) => {
+    if (code == null || code === 0) return;
+    if (currentProxyProcess !== child) return;
+    if (Date.now() - startedAt > 12000) return;
+
+    console.error(`Proxy (${proxyType}) exited with code ${code}`, signal || '');
+    currentProxyProcess = null;
+    currentProxyListenPort = null;
+    currentProxyKind = null;
+
+    void (async () => {
+      await delayMs(450);
+      const nextPort = await findAvailableListenPort(boundPort + 1, 40);
+      if (nextPort == null) {
+        broadcastProxyPortState({
+          status: 'failed',
+          proxyType,
+          port: boundPort,
+          message: `Port ${boundPort} is in use and no nearby port was free.`,
+        });
+        return;
+      }
+      console.warn(
+        `Retrying ${proxyType} on port ${nextPort} after exit on ${boundPort}.`
+      );
+      persistProxyPortInSettings(proxyType, nextPort);
+      await spawnProxyOnPort(proxyType, nextPort, {
+        preferredPort: boundPort,
+        allowRetry: false,
+      });
+    })();
+  });
+}
+
+/**
+ * @returns {Promise<number | null>}
+ */
+async function spawnProxyOnPort(proxyType, port, options = {}) {
+  const { preferredPort = port, allowRetry = true } = options;
+  const child = startProxy(proxyType, port);
+  if (!child) {
+    broadcastProxyPortState({
+      status: 'failed',
+      proxyType,
+      port,
+      message: 'Could not start the proxy process.',
+    });
+    return null;
+  }
+
+  currentProxyProcess = child;
+  currentProxyListenPort = port;
+  currentProxyKind = proxyType;
+
+  const startedAt = Date.now();
+  if (allowRetry) {
+    attachProxyExitRecovery(child, proxyType, port, startedAt);
+  }
+
+  const listening = await waitForPortOpen(port, 6000);
+  if (!listening) {
+    console.warn(`Proxy (${proxyType}) did not open port ${port} in time.`);
+    if (allowRetry) {
+      try {
+        child.kill();
+      } catch (_) {}
+      currentProxyProcess = null;
+      currentProxyListenPort = null;
+      currentProxyKind = null;
+      await delayMs(450);
+      const nextPort = await findAvailableListenPort(port + 1, 40);
+      if (nextPort != null && nextPort !== port) {
+        persistProxyPortInSettings(proxyType, nextPort);
+        return spawnProxyOnPort(proxyType, nextPort, {
+          preferredPort,
+          allowRetry: false,
+        });
+      }
+    }
+    broadcastProxyPortState({
+      status: 'failed',
+      proxyType,
+      port,
+      message: `Nothing is listening on port ${port}.`,
+    });
+    return null;
+  }
+
+  if (port !== parseInt(String(preferredPort), 10)) {
+    broadcastProxyPortState({
+      status: 'relocated',
+      proxyType,
+      port,
+      message: `Port ${preferredPort} was in use; proxy is running on ${port}.`,
+    });
+  } else {
+    broadcastProxyPortState({
+      status: 'running',
+      proxyType,
+      port,
+      message: `Proxy listening on port ${port}.`,
+    });
+  }
+
+  return port;
+}
+
+/**
+ * Pick a listen port (configured or next free) and spawn the proxy child.
+ * @returns {Promise<number | null>}
+ */
+async function startProxyWithResolvedPort(proxyType, preferredPort) {
+  if (proxyType !== 'ultraviolet' && proxyType !== 'scramjet') {
+    return null;
+  }
+
+  const preferred = parseInt(String(preferredPort), 10);
+  const fallback = defaultPortForProxyType(proxyType);
+  const startFrom = Number.isFinite(preferred) ? preferred : fallback;
+
+  let port = await findAvailableListenPort(startFrom);
+  if (port == null) {
+    dialog.showErrorBox(
+      APP_DISPLAY_NAME,
+      `Could not find a free port near ${startFrom} for the ${proxyType === 'scramjet' ? 'Scramjet' : 'Ultraviolet'} proxy.\n\n` +
+        'Another app may be using many ports, or a previous Bavarium session may still be running. Quit other copies of Bavarium or change the port in Settings → Proxy.'
+    );
+    broadcastProxyPortState({
+      status: 'failed',
+      proxyType,
+      port: startFrom,
+      message: `No free port found near ${startFrom}.`,
+    });
+    return null;
+  }
+
+  if (port !== startFrom) {
+    console.warn(
+      `Proxy port ${startFrom} is in use; starting ${proxyType} on ${port} instead.`
+    );
+    persistProxyPortInSettings(proxyType, port);
+  }
+
+  return spawnProxyOnPort(proxyType, port, { preferredPort: startFrom });
 }
 
 function waitForPort(port, callback) {
-  const client = new net.Socket();
-
-  client.setTimeout(1000);
-
-  client.once('error', () => {
-    setTimeout(() => waitForPort(port, callback), 300);
+  waitForPortOpen(port, 120000).then((ok) => {
+    if (ok) callback();
   });
+}
 
-  client.once('timeout', () => {
-    client.destroy();
-    setTimeout(() => waitForPort(port, callback), 300);
-  });
-
-  client.connect(port, '127.0.0.1', () => {
-    client.end();
-    callback();
+/** @returns {Promise<boolean>} */
+function waitForPortOpen(port, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const attempt = () => {
+      if (Date.now() > deadline) {
+        resolve(false);
+        return;
+      }
+      const client = new net.Socket();
+      client.setTimeout(600);
+      client.once('connect', () => {
+        client.end();
+        resolve(true);
+      });
+      client.once('timeout', () => {
+        client.destroy();
+        setTimeout(attempt, 280);
+      });
+      client.once('error', () => {
+        client.destroy();
+        setTimeout(attempt, 280);
+      });
+      client.connect(port, '127.0.0.1');
+    };
+    attempt();
   });
 }
 
@@ -2439,25 +2669,23 @@ function setupDownloadSession() {
   setupDownloadHandlersForPartition(INCOGNITO_PARTITION, false);
 }
 
-function startSelectedProxy() {
+async function startSelectedProxy() {
   const settings = loadSettings();
 
   stopProxy();
-  currentProxyProcess = null;
+  await delayMs(400);
 
   if (settings.proxyEnabled === false) {
     return null;
   }
 
   const proxyType = normalizeProxyTypeFromDisk(settings.proxyType || 'ultraviolet');
+  const preferred =
+    proxyType === 'ultraviolet'
+      ? settings.uvPort || '8080'
+      : settings.scramjetPort || '3000';
 
-  const port = proxyType === 'ultraviolet'
-    ? (settings.uvPort || '8080')
-    : (settings.scramjetPort || '3000');
-
-  currentProxyProcess = startProxy(proxyType, port);
-
-  return port;
+  return startProxyWithResolvedPort(proxyType, preferred);
 }
 
 // 🔥 LIVE SWITCHING
@@ -2472,7 +2700,6 @@ ipcMain.on('change-proxy', (event, settings) => {
   }
 
   stopProxy();
-  currentProxyProcess = null;
 
   if (settings.proxyEnabled === false) {
     broadcastToAllWindows('settings-updated', settings);
@@ -2481,17 +2708,19 @@ ipcMain.on('change-proxy', (event, settings) => {
   }
 
   const proxyType = normalizeProxyTypeFromDisk(settings.proxyType || 'ultraviolet');
-  const port = proxyType === 'ultraviolet'
-    ? settings.uvPort || '8080'
-    : settings.scramjetPort || '3000';
+  const preferred =
+    proxyType === 'ultraviolet'
+      ? settings.uvPort || '8080'
+      : settings.scramjetPort || '3000';
 
-  currentProxyProcess = startProxy(proxyType, port);
-
-  waitForPort(port, () => {
-    broadcastToAllWindows('settings-updated', settings);
-    applyFrameRateSettingsToAll(settings);
+  void (async () => {
+    await delayMs(400);
+    const port = await startProxyWithResolvedPort(proxyType, preferred);
+    if (port == null) return;
+    const merged = mergedSettingsFromDisk();
+    applyFrameRateSettingsToAll(merged);
     broadcastToAllWindows('proxy-switched');
-  });
+  })();
 });
 
 // Save settings
@@ -3002,19 +3231,29 @@ ipcMain.handle('get-default-downloads-path', () => app.getPath('downloads'));
 /**
  * Returns whether something is already listening on 127.0.0.1:port (EADDRINUSE when we try to bind).
  */
+/**
+ * True when something accepts TCP connections on 127.0.0.1:port (proxy already listening).
+ */
 function checkPortInUse(port) {
   return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', (err) => {
+    const socket = new net.Socket();
+    const done = (result) => {
       try {
-        server.close();
+        socket.destroy();
       } catch (_) {}
-      if (err.code === 'EADDRINUSE') resolve({ inUse: true });
-      else resolve({ inUse: false, bindError: err.message });
+      resolve(result);
+    };
+    socket.setTimeout(500);
+    socket.once('connect', () => done({ inUse: true }));
+    socket.once('timeout', () => done({ inUse: false }));
+    socket.once('error', (err) => {
+      if (err.code === 'ECONNREFUSED') {
+        done({ inUse: false });
+        return;
+      }
+      done({ inUse: false, bindError: err.message });
     });
-    server.listen({ port, host: '127.0.0.1' }, () => {
-      server.close(() => resolve({ inUse: false }));
-    });
+    socket.connect(port, '127.0.0.1');
   });
 }
 
@@ -3044,20 +3283,38 @@ ipcMain.handle('check-proxy-port', async (event, payload) => {
   const uvDisk = parseInt(String(settings.uvPort || '8080'), 10);
   const sjDisk = parseInt(String(settings.scramjetPort || '3000'), 10);
   let isOurProxy = false;
-  if (result.inUse) {
-    if (which === 'uv' && pType === 'ultraviolet' && port === uvDisk) {
+  if (result.inUse && proxyChildIsRunning() && port === currentProxyListenPort) {
+    if (which === 'uv' && currentProxyKind === 'ultraviolet') {
       isOurProxy = true;
     }
-    if (which === 'sj' && pType === 'scramjet' && port === sjDisk) {
+    if (which === 'sj' && currentProxyKind === 'scramjet') {
       isOurProxy = true;
     }
   }
+
+  let suggestedPort = null;
+  if (result.inUse && !isOurProxy) {
+    suggestedPort = await findAvailableListenPort(port);
+  }
+
   return {
     ok: true,
     port,
     inUse: result.inUse,
     isOurProxy,
+    suggestedPort,
+    configuredPort: which === 'uv' ? uvDisk : sjDisk,
   };
+});
+
+ipcMain.handle('find-available-proxy-port', async (_event, payload) => {
+  const portInput = payload && payload.port != null ? payload.port : '';
+  const port = parseInt(String(portInput).trim(), 10);
+  if (!Number.isFinite(port) || port < 1 || port > 65535) {
+    return { ok: false, message: 'Invalid port.' };
+  }
+  const available = await findAvailableListenPort(port);
+  return { ok: true, port, available };
 });
 
 function dispatchBavariumProtocolUrl(url) {
@@ -3133,7 +3390,7 @@ if (gotTheLock) {
     setupNetworkPerfCounters(session.fromPartition(BAVARIUM_WEB_PARTITION));
     setInterval(tickNetPerfRates, 1000);
     setupDownloadSession();
-    startSelectedProxy();
+    void startSelectedProxy();
     // Never block the UI on the proxy binding: in packaged builds the child can fail
     // (path, quarantine, port) and waitForPort would retry forever with no window shown.
     createWindow();
