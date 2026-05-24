@@ -398,6 +398,18 @@ const GUEST_PICK_LINK_REMOTE_AT_POINT = `(function(x, y) {
 })`;
 
 let currentProxyProcess = null;
+/** Active Electron download items (in progress or awaiting save dialog). */
+const activeDownloadItems = new Set();
+let quitConfirmed = false;
+let quitWhenDownloadsComplete = false;
+let quitPromptWin = null;
+let pendingQuitPromptResolve = null;
+let quitPromptPromise = null;
+let confirmPromptWin = null;
+let pendingConfirmPromptResolve = null;
+let confirmPromptPromise = null;
+let confirmPromptGeneration = 0;
+let downloadProgressBroadcastTimer = null;
 /** Port the spawned proxy child was started on (null if not running). */
 let currentProxyListenPort = null;
 /** @type {'ultraviolet' | 'scramjet' | null} */
@@ -482,6 +494,253 @@ function setupHoldAltMenuBar(win) {
   win.on('blur', hideBar);
 }
 
+function getActiveDownloadCount() {
+  let n = 0;
+  for (const item of activeDownloadItems) {
+    try {
+      if (item && typeof item.getState === 'function') {
+        const state = item.getState();
+        if (state !== 'completed' && state !== 'cancelled') n++;
+      } else {
+        n++;
+      }
+    } catch (_) {
+      n++;
+    }
+  }
+  return n;
+}
+
+function scheduleDownloadProgressBroadcast() {
+  if (downloadProgressBroadcastTimer) return;
+  downloadProgressBroadcastTimer = setTimeout(() => {
+    downloadProgressBroadcastTimer = null;
+    if (getActiveDownloadCount() > 0) {
+      broadcastToAllWindows('downloads-updated');
+    }
+  }, 300);
+}
+
+function summarizeActiveDownloadItem(item) {
+  if (!item) return null;
+  try {
+    const state = item.getState();
+    if (state === 'completed' || state === 'cancelled') return null;
+    const received = item.getReceivedBytes();
+    const total = item.getTotalBytes();
+    return {
+      id: `active-${item.getStartTime ? item.getStartTime() : Date.now()}`,
+      name: item.getFilename() || 'Download',
+      path: item.getSavePath() || '',
+      url: item.getURL() || '',
+      state,
+      receivedBytes: Number.isFinite(received) ? received : 0,
+      totalBytes: Number.isFinite(total) ? total : 0,
+      active: true,
+      ts: Date.now(),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function trackActiveDownloadItem(item) {
+  if (!item) return;
+  activeDownloadItems.add(item);
+  item.on('updated', scheduleDownloadProgressBroadcast);
+  const untrack = () => {
+    activeDownloadItems.delete(item);
+    scheduleDownloadProgressBroadcast();
+    if (quitWhenDownloadsComplete && getActiveDownloadCount() === 0) {
+      quitWhenDownloadsComplete = false;
+      quitConfirmed = true;
+      app.quit();
+    }
+  };
+  item.once('done', untrack);
+}
+
+function cancelActiveDownloads() {
+  for (const item of activeDownloadItems) {
+    try {
+      if (item && typeof item.cancel === 'function') item.cancel();
+    } catch (_) {}
+  }
+  activeDownloadItems.clear();
+}
+
+function showQuitPrompt() {
+  return new Promise((resolve) => {
+    if (quitPromptWin && !quitPromptWin.isDestroyed()) {
+      try {
+        quitPromptWin.close();
+      } catch (_) {}
+    }
+    pendingQuitPromptResolve = resolve;
+    const parent = dialogParentWindow();
+    const iconPath = getAppIconPath();
+    const activeDownloads = getActiveDownloadCount();
+    const height = activeDownloads > 0 ? 300 : 200;
+    quitPromptWin = new BrowserWindow({
+      width: 460,
+      height,
+      minWidth: 380,
+      minHeight: height,
+      maxHeight: 360,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      parent: parent && !parent.isDestroyed() ? parent : undefined,
+      modal: !!(parent && !parent.isDestroyed()),
+      show: false,
+      autoHideMenuBar: true,
+      title: 'Quit Bavarium',
+      ...(iconPath ? { icon: iconPath } : {}),
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+        sandbox: false,
+      },
+    });
+    quitPromptWin.on('closed', () => {
+      quitPromptWin = null;
+      if (pendingQuitPromptResolve) {
+        const done = pendingQuitPromptResolve;
+        pendingQuitPromptResolve = null;
+        done({ proceed: false });
+      }
+    });
+    quitPromptWin.loadFile(path.join(__dirname, 'quit-prompt.html'));
+    quitPromptWin.webContents.once('did-finish-load', () => {
+      if (!quitPromptWin || quitPromptWin.isDestroyed()) return;
+      quitPromptWin.webContents.send('quit-prompt-init', { activeDownloads });
+      quitPromptWin.show();
+      quitPromptWin.focus();
+    });
+  });
+}
+
+/**
+ * @returns {Promise<{ proceed: boolean, downloadInBackground?: boolean }>}
+ */
+function requestQuitConfirmation() {
+  if (quitPromptPromise) return quitPromptPromise;
+  quitPromptPromise = showQuitPrompt().finally(() => {
+    quitPromptPromise = null;
+  });
+  return quitPromptPromise;
+}
+
+function showConfirmPrompt(payload) {
+  if (confirmPromptPromise) return confirmPromptPromise;
+  confirmPromptPromise = new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      confirmPromptPromise = null;
+      resolve(result);
+    };
+    const generation = ++confirmPromptGeneration;
+    if (confirmPromptWin && !confirmPromptWin.isDestroyed()) {
+      try {
+        confirmPromptWin.close();
+      } catch (_) {}
+      confirmPromptWin = null;
+    }
+    pendingConfirmPromptResolve = finish;
+    const parent = dialogParentWindow();
+    const iconPath = getAppIconPath();
+    const title =
+      (payload && payload.windowTitle) || 'Confirm';
+    const message =
+      (payload && payload.message) || 'Are you sure you want to continue?';
+    const lineCount = Math.ceil(message.length / 52);
+    const height = Math.min(320, Math.max(180, 120 + lineCount * 18));
+    confirmPromptWin = new BrowserWindow({
+      width: 480,
+      height,
+      minWidth: 360,
+      minHeight: height,
+      maxHeight: 400,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      parent: parent && !parent.isDestroyed() ? parent : undefined,
+      modal: !!(parent && !parent.isDestroyed()),
+      show: false,
+      autoHideMenuBar: true,
+      title,
+      ...(iconPath ? { icon: iconPath } : {}),
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+        sandbox: false,
+      },
+    });
+    confirmPromptWin.on('closed', () => {
+      confirmPromptWin = null;
+      if (
+        pendingConfirmPromptResolve === finish &&
+        generation === confirmPromptGeneration
+      ) {
+        pendingConfirmPromptResolve = null;
+        finish({ proceed: false });
+      }
+    });
+    confirmPromptWin.loadFile(path.join(__dirname, 'confirm-prompt.html'));
+    confirmPromptWin.webContents.once('did-finish-load', () => {
+      if (!confirmPromptWin || confirmPromptWin.isDestroyed()) return;
+      confirmPromptWin.webContents.send('confirm-prompt-init', {
+        windowTitle: title,
+        message,
+        confirmLabel: (payload && payload.confirmLabel) || 'Continue',
+      });
+      confirmPromptWin.show();
+      confirmPromptWin.focus();
+    });
+  });
+  return confirmPromptPromise;
+}
+
+function destroyAllBrowserWindows() {
+  for (const w of getAppBrowserWindows()) {
+    try {
+      if (!w.isDestroyed()) w.destroy();
+    } catch (_) {}
+  }
+}
+
+async function finalizeQuitFromPrompt({ downloadInBackground }) {
+  const activeCount = getActiveDownloadCount();
+  if (downloadInBackground && activeCount > 0) {
+    quitWhenDownloadsComplete = true;
+    destroyAllBrowserWindows();
+    return;
+  }
+  cancelActiveDownloads();
+  quitConfirmed = true;
+  app.quit();
+}
+
+function attachWindowQuitGuard(win) {
+  win.on('close', (e) => {
+    if (quitConfirmed || quitWhenDownloadsComplete) return;
+    const others = getAppBrowserWindows().filter((w) => w !== win);
+    if (others.length > 0) return;
+
+    e.preventDefault();
+    void requestQuitConfirmation().then((result) => {
+      if (!result || !result.proceed) return;
+      void finalizeQuitFromPrompt({
+        downloadInBackground: !!result.downloadInBackground,
+      });
+    });
+  });
+}
+
 function createWindow() {
   const iconPath = getAppIconPath();
   const win = new BrowserWindow({
@@ -496,6 +755,7 @@ function createWindow() {
     }
   });
 
+  attachWindowQuitGuard(win);
   setupHoldAltMenuBar(win);
   win.webContents.once('did-finish-load', () => {
     if (pendingBavariumLaunchUrl) {
@@ -589,6 +849,23 @@ function createApplicationMenu() {
         accelerator: 'CommandOrControl+R',
         click: () => send('reload')
       },
+      { type: 'separator' },
+      {
+        label: 'Zoom In',
+        accelerator: 'CommandOrControl+=',
+        click: () => send('zoom-in')
+      },
+      {
+        label: 'Zoom Out',
+        accelerator: 'CommandOrControl+-',
+        click: () => send('zoom-out')
+      },
+      {
+        label: 'Reset Zoom',
+        accelerator: 'CommandOrControl+0',
+        click: () => send('zoom-reset')
+      },
+      { type: 'separator' },
       { role: 'togglefullscreen' }
     ]
   });
@@ -867,6 +1144,8 @@ async function spawnProxyOnPort(proxyType, port, options = {}) {
     });
   }
 
+  await clearProxyShellStorageForPort(port);
+
   return port;
 }
 
@@ -1130,6 +1409,21 @@ function applyFrameRateSettingsToAll(settings) {
   resolveFrameRateCap(settings);
   injectFrameRateCapOnAllGuests();
 }
+
+ipcMain.handle('bavarium-set-guest-zoom', async (_event, payload) => {
+  const rawId = payload && payload.webContentsId;
+  const id = rawId != null ? Number(rawId) : NaN;
+  const factor = payload && payload.factor != null ? Number(payload.factor) : NaN;
+  if (!Number.isFinite(id) || !Number.isFinite(factor)) return { ok: false };
+  const wc = webContents.fromId(id);
+  if (!wc || wc.isDestroyed()) return { ok: false };
+  try {
+    wc.setZoomFactor(factor);
+    return { ok: true, factor };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
 
 ipcMain.handle('bavarium-reset-tab-fps-poll', async (_event, payload) => {
   const rawId = payload && payload.webContentsId;
@@ -1580,6 +1874,102 @@ function decodeScramjetTunnelUrlMenu(url) {
   } catch (_) {
     return '';
   }
+}
+
+const PROXY_LANDING_TITLE_RE =
+  /^(scramjet(\s*\|\s*mw)?|ultraviolet(\s*\|\s*sophisticated))/i;
+
+function isProxyLandingTitle(title) {
+  if (!title || typeof title !== 'string') return false;
+  const t = title.trim();
+  if (PROXY_LANDING_TITLE_RE.test(t)) return true;
+  if (/^ultraviolet\s*\|/i.test(t)) return true;
+  if (/^scramjet(\s*\|)?/i.test(t)) return true;
+  return false;
+}
+
+function titleLooksLikeProxiedShell(text) {
+  if (!text || typeof text !== 'string') return false;
+  const t = text.trim();
+  if (/^https?:\/\//i.test(t)) return true;
+  if (/%3A%2F%2F/i.test(t)) return true;
+  return /localhost|127\.0\.0\.1/i.test(t) && /[?#&]url=/i.test(t);
+}
+
+/** Target site encoded in a local proxy shell URL (`?url=` or `#url=`). */
+function proxyShellTargetFromUrl(shellUrl) {
+  if (!shellUrl || typeof shellUrl !== 'string') return '';
+  try {
+    const u = new URL(shellUrl);
+    if (
+      u.hostname !== 'localhost' &&
+      u.hostname !== '127.0.0.1' &&
+      u.hostname !== '::1'
+    ) {
+      return '';
+    }
+    let inner = u.searchParams.get('url');
+    if (!inner && u.hash) {
+      const h = u.hash.replace(/^#/, '');
+      if (h.startsWith('url=')) {
+        inner = decodeURIComponent(h.slice(4));
+      }
+    }
+    return inner || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function coerceRemoteHttpUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  const t = url.trim();
+  if (!t) return '';
+  if (isRemoteHttpUrlForMenu(t)) return t;
+  try {
+    const withProto = t.startsWith('http') ? t : `https://${t}`;
+    return isRemoteHttpUrlForMenu(withProto) ? new URL(withProto).href : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * Resolve proxied shell / tunnel URLs and proxy landing titles for homepage tiles.
+ * @returns {{ url: string, title: string, isRemote: boolean }}
+ */
+function normalizeSiteTileMeta(url, title) {
+  let u = String(url || '').trim();
+  let t = String(title || '').trim();
+
+  const fromScramjet = decodeScramjetTunnelUrlMenu(u);
+  if (fromScramjet) u = fromScramjet;
+
+  const fromShell = proxyShellTargetFromUrl(u);
+  if (fromShell) {
+    const remote = coerceRemoteHttpUrl(fromShell);
+    if (remote) u = remote;
+  }
+
+  const remoteUrl = coerceRemoteHttpUrl(u);
+  if (remoteUrl) u = remoteUrl;
+
+  if (isProxyLandingTitle(t) || titleLooksLikeProxiedShell(t)) {
+    t = '';
+  }
+
+  let hostname = '';
+  try {
+    const parsed = new URL(u.startsWith('http') ? u : `https://${u}`);
+    hostname = parsed.hostname.replace(/^www\./i, '');
+  } catch (_) {}
+
+  const displayTitle = t || hostname || 'Site';
+  return {
+    url: u,
+    title: displayTitle,
+    isRemote: isRemoteHttpUrlForMenu(u),
+  };
 }
 
 async function decodeTunnelHrefInGuest(wc, href) {
@@ -2194,6 +2584,25 @@ function writeDownloadsFile(items) {
 
 const BAVARIUM_WEB_PARTITION = 'persist:bavarium';
 
+/** Drop stale SW / IndexedDB on the local proxy origin (avoids IDB schema mismatches). */
+async function clearProxyShellStorageForPort(port) {
+  const storages = ['indexdb', 'serviceworkers', 'cachestorage'];
+  const origins = [
+    `http://127.0.0.1:${port}`,
+    `http://localhost:${port}`,
+  ];
+  for (const partition of [BAVARIUM_WEB_PARTITION]) {
+    const ses = session.fromPartition(partition);
+    for (const origin of origins) {
+      try {
+        await ses.clearStorageData({ origin, storages });
+      } catch (e) {
+        console.warn('clearProxyShellStorageForPort', partition, origin, e);
+      }
+    }
+  }
+}
+
 /** Permissions exposed in Settings → History/Privacy. */
 const SITE_PERMISSION_TYPES = [
   { id: 'geolocation', label: 'Location' },
@@ -2661,6 +3070,7 @@ function setupDownloadHandlersForPartition(partition, recordInDownloadManager) {
   ses.__bavariumDownloadsHooked = true;
 
   ses.on('will-download', (event, item) => {
+    trackActiveDownloadItem(item);
     const s = loadSettings();
     const ask = s.askBeforeDownload !== false;
     const baseDir =
@@ -3190,6 +3600,49 @@ ipcMain.handle('check-prerelease-builds', () =>
   checkBavariumBrowserUpdates({ prerelease: true })
 );
 
+ipcMain.handle('show-confirm-prompt', async (_event, payload) => {
+  const result = await showConfirmPrompt(payload || {});
+  return !!(result && result.proceed);
+});
+
+ipcMain.on('confirm-prompt-choice', (_event, payload) => {
+  const proceed =
+    payload && typeof payload === 'object' && payload.proceed === true;
+  const done = pendingConfirmPromptResolve;
+  pendingConfirmPromptResolve = null;
+  if (done) {
+    done({ proceed });
+  }
+  if (confirmPromptWin && !confirmPromptWin.isDestroyed()) {
+    try {
+      confirmPromptWin.close();
+    } catch (_) {}
+  }
+});
+
+ipcMain.on('quit-prompt-choice', (_event, payload) => {
+  const action =
+    payload && typeof payload === 'object' ? payload.action : payload;
+  const downloadInBackground =
+    payload &&
+    typeof payload === 'object' &&
+    payload.downloadInBackground === true;
+  if (quitPromptWin && !quitPromptWin.isDestroyed()) {
+    try {
+      quitPromptWin.close();
+    } catch (_) {}
+  }
+  if (pendingQuitPromptResolve) {
+    const done = pendingQuitPromptResolve;
+    pendingQuitPromptResolve = null;
+    if (action === 'leave') {
+      done({ proceed: true, downloadInBackground });
+    } else {
+      done({ proceed: false });
+    }
+  }
+});
+
 ipcMain.on('update-prompt-choice', (_event, action) => {
   if (!pendingUpdatePromptResolve) return;
   const done = pendingUpdatePromptResolve;
@@ -3260,6 +3713,12 @@ function getNewtabFooterInfo() {
 ipcMain.handle('get-newtab-footer-info', () => getNewtabFooterInfo());
 
 ipcMain.handle('get-homepage-favorites', () => readHomepageFavoritesFile());
+
+ipcMain.handle('normalize-site-tile-meta', (_event, payload) => {
+  const url = payload && payload.url;
+  const title = payload && payload.title;
+  return normalizeSiteTileMeta(url, title);
+});
 
 ipcMain.handle('save-homepage-favorites', (_event, list) => {
   writeHomepageFavoritesFile(list);
@@ -3423,7 +3882,7 @@ ipcMain.on('bavarium-open-tab-in-new-window', (_event, payload) => {
   setTimeout(sendBootstrap, 750);
 });
 
-/** Shell closes the window when the last tab is closed; app may keep running (proxy stays up). */
+/** Shell closes the window when the last tab is closed (quit confirmation runs on last window). */
 ipcMain.on('bavarium-close-shell-window', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win && !win.isDestroyed()) {
@@ -3572,6 +4031,18 @@ ipcMain.on('history-update-title', (event, payload) => {
 });
 
 ipcMain.handle('get-download-records', () => readDownloadsFile());
+
+ipcMain.handle('get-downloads-shelf', () => {
+  const active = [];
+  for (const item of activeDownloadItems) {
+    const row = summarizeActiveDownloadItem(item);
+    if (row) active.push(row);
+  }
+  const recent = readDownloadsFile()
+    .slice(0, 5)
+    .map((d) => ({ ...d, active: false }));
+  return { active, recent };
+});
 
 ipcMain.handle('clear-download-records', () => {
   writeDownloadsFile([]);
@@ -3914,7 +4385,19 @@ if (gotTheLock) {
   });
 
   app.on('window-all-closed', () => {
-    // Do not quit: local proxy keeps running until File → Quit / Cmd+Q (macOS) exits the app.
+    if (quitWhenDownloadsComplete) return;
+    app.quit();
+  });
+
+  app.on('before-quit', (e) => {
+    if (quitConfirmed) return;
+    e.preventDefault();
+    void requestQuitConfirmation().then((result) => {
+      if (!result || !result.proceed) return;
+      void finalizeQuitFromPrompt({
+        downloadInBackground: !!result.downloadInBackground,
+      });
+    });
   });
 
   app.on('activate', () => {
@@ -3924,6 +4407,7 @@ if (gotTheLock) {
   });
 
   app.on('will-quit', () => {
+    quitConfirmed = true;
     stopProxy();
   });
 }

@@ -112,6 +112,88 @@
       min-width: 200px;
       gap: 6px;
     }
+    #siteInfoAnchor {
+      position: relative;
+      flex-shrink: 0;
+    }
+    #siteInfoAnchor[hidden] {
+      display: none !important;
+    }
+    #btnSiteInfo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      margin: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: #5f6368;
+      cursor: pointer;
+    }
+    #btnSiteInfo:hover {
+      background: rgba(95, 99, 104, 0.12);
+    }
+    #btnSiteInfo:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(95, 99, 104, 0.35);
+    }
+    #btnSiteInfo.kind-https {
+      color: #188038;
+    }
+    #btnSiteInfo.kind-https:hover {
+      background: rgba(24, 128, 56, 0.12);
+    }
+    #btnSiteInfo.kind-https:focus-visible {
+      box-shadow: 0 0 0 2px rgba(24, 128, 56, 0.35);
+    }
+    #btnSiteInfo.kind-bavarium {
+      color: #5c6bc0;
+    }
+    #btnSiteInfo.kind-bavarium:hover {
+      background: rgba(92, 107, 192, 0.14);
+    }
+    #btnSiteInfo.kind-bavarium:focus-visible {
+      box-shadow: 0 0 0 2px rgba(92, 107, 192, 0.4);
+    }
+    #btnSiteInfo.kind-reblock {
+      color: #1a73e8;
+    }
+    #btnSiteInfo.kind-reblock:hover {
+      background: rgba(26, 115, 232, 0.12);
+    }
+    #btnSiteInfo.kind-reblock:focus-visible {
+      box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.35);
+    }
+    #siteInfoIcon svg {
+      display: block;
+      width: 18px;
+      height: 18px;
+    }
+    #siteInfoPopover {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 1100;
+      width: min(300px, calc(100vw - 24px));
+      padding: 12px 14px;
+      background: #fff;
+      color: #202124;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    #siteInfoPopover.open {
+      display: block;
+    }
+    #siteInfoPopover p {
+      margin: 0;
+    }
     #url {
       flex: 1;
       min-width: 0;
@@ -160,6 +242,227 @@
       outline: none;
       box-shadow: 0 0 0 2px rgba(0, 200, 83, 0.35);
     }
+    #zoomAnchor {
+      position: relative;
+      flex-shrink: 0;
+    }
+    #btnZoom {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      min-width: 52px;
+      padding: 0 8px;
+    }
+    #btnZoom .zoom-toolbar-label {
+      line-height: 1;
+    }
+    #zoomPopover {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 1100;
+      width: min(280px, calc(100vw - 24px));
+      background: #fff;
+      color: #202124;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+      flex-direction: column;
+      padding: 12px 14px 14px;
+      gap: 12px;
+    }
+    #zoomPopover.open {
+      display: flex;
+    }
+    .zoom-popover-percent {
+      font-size: 22px;
+      font-weight: 500;
+      text-align: center;
+      line-height: 1.2;
+    }
+    .zoom-popover-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .zoom-popover-step {
+      flex-shrink: 0;
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      background: #f8f9fa;
+      color: #202124;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .zoom-popover-step:hover {
+      background: #e8eaed;
+    }
+    .zoom-popover-step:active {
+      background: #dadce0;
+    }
+    #zoomPopoverSlider {
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      accent-color: #1a73e8;
+    }
+    #zoomPopoverReset {
+      width: 100%;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+      background: #f8f9fa;
+      color: #202124;
+      cursor: pointer;
+    }
+    #zoomPopoverReset:hover:not(:disabled) {
+      background: #e8eaed;
+    }
+    #zoomPopoverReset:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    #downloadsAnchor {
+      position: relative;
+      flex-shrink: 0;
+    }
+    #btnDownloads {
+      position: relative;
+    }
+    #btnDownloads.has-active::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #1a73e8;
+      border: 1.5px solid #ddd;
+    }
+    #downloadsPopover {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 1100;
+      width: min(360px, calc(100vw - 24px));
+      max-height: min(420px, 70vh);
+      background: #fff;
+      color: #202124;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #downloadsPopover.open {
+      display: flex;
+    }
+    #downloadsShelfList {
+      overflow-y: auto;
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 6px 0;
+    }
+    .downloads-shelf-empty {
+      padding: 20px 16px;
+      font-size: 13px;
+      color: #5f6368;
+      text-align: center;
+      line-height: 1.45;
+    }
+    .downloads-shelf-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      width: 100%;
+      padding: 10px 16px;
+      border: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .downloads-shelf-row:hover {
+      background: rgba(0, 0, 0, 0.04);
+    }
+    .downloads-shelf-icon {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      margin-top: 2px;
+      opacity: 0.85;
+    }
+    .downloads-shelf-body {
+      flex: 1;
+      min-width: 0;
+    }
+    .downloads-shelf-name {
+      font-size: 13px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .downloads-shelf-meta {
+      font-size: 11px;
+      color: #5f6368;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .downloads-shelf-progress {
+      height: 3px;
+      margin-top: 6px;
+      background: #e8eaed;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .downloads-shelf-progress > span {
+      display: block;
+      height: 100%;
+      background: #1a73e8;
+      border-radius: 2px;
+      transition: width 0.15s ease;
+    }
+    #downloadsShelfFooter {
+      flex-shrink: 0;
+      border-top: 1px solid #e8eaed;
+      padding: 8px;
+    }
+    #downloadsShelfOpenManager {
+      width: 100%;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: #1a73e8;
+      cursor: pointer;
+    }
+    #downloadsShelfOpenManager:hover {
+      background: rgba(26, 115, 232, 0.08);
+    }
     @media (prefers-color-scheme: dark) {
       #controls {
         background: #202124;
@@ -184,6 +487,99 @@
       }
       .toolbar-icon-btn:hover {
         background: rgba(255, 255, 255, 0.08);
+      }
+      #btnDownloads.has-active::after {
+        border-color: #202124;
+        background: #8ab4f8;
+      }
+      #downloadsPopover {
+        background: #292a2d;
+        color: #e8eaed;
+        border-color: #3c4043;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      }
+      .downloads-shelf-empty {
+        color: #9aa0a6;
+      }
+      .downloads-shelf-row:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .downloads-shelf-meta {
+        color: #9aa0a6;
+      }
+      .downloads-shelf-progress {
+        background: #3c4043;
+      }
+      .downloads-shelf-progress > span {
+        background: #8ab4f8;
+      }
+      #downloadsShelfFooter {
+        border-top-color: #3c4043;
+      }
+      #downloadsShelfOpenManager {
+        color: #8ab4f8;
+      }
+      #downloadsShelfOpenManager:hover {
+        background: rgba(138, 180, 248, 0.12);
+      }
+      #zoomPopover {
+        background: #292a2d;
+        color: #e8eaed;
+        border-color: #3c4043;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      }
+      .zoom-popover-step {
+        background: #3c4043;
+        color: #e8eaed;
+        border-color: #5f6368;
+      }
+      .zoom-popover-step:hover {
+        background: #48494d;
+      }
+      .zoom-popover-step:active {
+        background: #5f6368;
+      }
+      #zoomPopoverSlider {
+        accent-color: #8ab4f8;
+      }
+      #zoomPopoverReset {
+        background: #3c4043;
+        color: #e8eaed;
+        border-color: #5f6368;
+      }
+      #zoomPopoverReset:hover:not(:disabled) {
+        background: #48494d;
+      }
+      #btnSiteInfo.kind-https {
+        color: #81c995;
+      }
+      #btnSiteInfo.kind-https:hover {
+        background: rgba(129, 201, 149, 0.16);
+      }
+      #btnSiteInfo.kind-https:focus-visible {
+        box-shadow: 0 0 0 2px rgba(129, 201, 149, 0.4);
+      }
+      #btnSiteInfo.kind-bavarium {
+        color: #9fa8da;
+      }
+      #btnSiteInfo.kind-bavarium:hover {
+        background: rgba(159, 168, 218, 0.16);
+      }
+      #btnSiteInfo.kind-reblock {
+        color: #8ab4f8;
+      }
+      #btnSiteInfo.kind-reblock:hover {
+        background: rgba(138, 180, 248, 0.14);
+      }
+      #siteInfoPopover {
+        background: #292a2d;
+        color: #e8eaed;
+        border-color: #3c4043;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      }
+      .downloads-toolbar-icon,
+      .downloads-shelf-icon {
+        filter: invert(1) brightness(1.05);
       }
     }
     #menu .menu-item {
@@ -322,8 +718,9 @@
     }
     #bookmarkModal .dialog,
     #bookmarkManagerModal .dialog {
-      --shell-surface: #f0f2f5;
-      --shell-bg: #fff;
+      /* Match newtab favorites modal (--surface / --bg) */
+      --shell-surface: #fff;
+      --shell-bg: #f0f2f5;
       --shell-text: #202124;
       --shell-muted: #5f6368;
       --shell-border: #dadce0;
@@ -359,6 +756,11 @@
     /* Webviews paint above normal DOM; hide them while a shell modal is open. */
     body.shell-modal-open #views {
       background: #f0f2f5;
+    }
+    @media (prefers-color-scheme: dark) {
+      body.shell-modal-open #views {
+        background: #131314;
+      }
     }
     body.shell-modal-open #views webview.tab-webview,
     body.shell-modal-open #devtoolsHost {
@@ -637,8 +1039,81 @@
   </button>
 
   <div id="urlWrap">
+    <div id="siteInfoAnchor" hidden>
+      <button
+        type="button"
+        id="btnSiteInfo"
+        title="Page information"
+        aria-label="Page information"
+        aria-haspopup="true"
+        aria-expanded="false"
+        aria-controls="siteInfoPopover"
+      >
+        <span id="siteInfoIcon" aria-hidden="true"></span>
+      </button>
+      <div id="siteInfoPopover" role="dialog" aria-label="Page information">
+        <p id="siteInfoPopoverText"></p>
+      </div>
+    </div>
     <input id="url" type="text" placeholder="Search or enter address" title="Type a URL, search terms, or bavarium:// address — Enter to go" autocomplete="off" spellcheck="true" enterkeyhint="go" aria-label="Address and search" />
     <button type="button" id="btnAddBookmark" title="Bookmark this page — save to the bar below (⌘D / Ctrl+D)" aria-label="Bookmark this page">★</button>
+  </div>
+
+  <div id="zoomAnchor">
+    <button
+      type="button"
+      id="btnZoom"
+      class="toolbar-icon-btn"
+      title="Page zoom (100%)"
+      aria-label="Page zoom"
+      aria-haspopup="true"
+      aria-expanded="false"
+      aria-controls="zoomPopover"
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+        <path d="M16 16l5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <path d="M8 11h6M11 8v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span class="zoom-toolbar-label" id="zoomToolbarLabel" aria-hidden="true">100%</span>
+    </button>
+    <div id="zoomPopover" role="dialog" aria-label="Page zoom">
+      <div class="zoom-popover-percent" id="zoomPopoverPercent">100%</div>
+      <div class="zoom-popover-row">
+        <button type="button" class="zoom-popover-step" id="zoomPopoverOut" title="Zoom out" aria-label="Zoom out">−</button>
+        <input type="range" id="zoomPopoverSlider" min="25" max="500" step="5" value="100" aria-label="Zoom level" />
+        <button type="button" class="zoom-popover-step" id="zoomPopoverIn" title="Zoom in" aria-label="Zoom in">+</button>
+      </div>
+      <button type="button" id="zoomPopoverReset" disabled>Reset to 100%</button>
+    </div>
+  </div>
+
+  <div id="downloadsAnchor">
+    <button
+      type="button"
+      id="btnDownloads"
+      class="toolbar-icon-btn"
+      title="Downloads"
+      aria-label="Downloads"
+      aria-haspopup="true"
+      aria-expanded="false"
+      aria-controls="downloadsPopover"
+    >
+      <img
+        class="downloads-toolbar-icon"
+        src="assets/menu-icons/downloads.png"
+        width="20"
+        height="20"
+        alt=""
+        aria-hidden="true"
+      />
+    </button>
+    <div id="downloadsPopover" role="dialog" aria-label="Recent downloads">
+      <div id="downloadsShelfList" role="list"></div>
+      <div id="downloadsShelfFooter">
+        <button type="button" id="downloadsShelfOpenManager">Download manager</button>
+      </div>
+    </div>
   </div>
 
   <button type="button" id="btnToolbarMenu" class="toolbar-icon-btn" onclick="toggleMenu()" title="Menu" aria-label="Open menu" aria-haspopup="true" style="position:relative; z-index:10;">

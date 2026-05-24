@@ -64,11 +64,34 @@ function faviconForUrl(url) {
 }
 
 function labelForSite(entry) {
+  if (entry.displayTitle && String(entry.displayTitle).trim()) {
+    return String(entry.displayTitle).trim();
+  }
   if (entry.title && String(entry.title).trim()) return String(entry.title).trim();
   try {
-    return new URL(entry.url).hostname;
+    return new URL(entry.url).hostname.replace(/^www\./i, "");
   } catch {
     return entry.url || "Site";
+  }
+}
+
+async function normalizeTileEntry(entry) {
+  if (!entry || !entry.url) return null;
+  try {
+    const meta = await ipcRenderer.invoke("normalize-site-tile-meta", {
+      url: entry.url,
+      title: entry.title || "",
+    });
+    if (!meta || !meta.isRemote) return null;
+    return {
+      ...entry,
+      url: meta.url,
+      title: meta.title,
+      displayTitle: meta.title,
+      faviconUrl: entry.faviconUrl || faviconForUrl(meta.url),
+    };
+  } catch (_) {
+    return null;
   }
 }
 
@@ -118,7 +141,30 @@ function startFooterStatusPoll() {
 async function loadFavorites() {
   try {
     const list = await ipcRenderer.invoke("get-homepage-favorites");
-    favorites = Array.isArray(list) ? list.filter((f) => f && f.url) : [];
+    const raw = Array.isArray(list) ? list.filter((f) => f && f.url) : [];
+    const normalized = [];
+    let changed = false;
+    for (const f of raw) {
+      const row = await normalizeTileEntry(f);
+      if (!row) continue;
+      if (
+        row.url !== f.url ||
+        row.title !== (f.title || "") ||
+        row.faviconUrl !== (f.faviconUrl || "")
+      ) {
+        changed = true;
+      }
+      normalized.push({
+        ...f,
+        url: row.url,
+        title: row.title,
+        faviconUrl: row.faviconUrl,
+      });
+    }
+    favorites = normalized;
+    if (changed) {
+      await saveFavorites();
+    }
   } catch {
     favorites = [];
   }
@@ -144,18 +190,23 @@ async function loadRecentSites() {
   );
   for (const h of items) {
     if (!h || !h.url) continue;
-    const u = String(h.url).trim();
+    const row = await normalizeTileEntry({
+      url: h.url,
+      title: h.title || "",
+    });
+    if (!row) continue;
+    const u = row.url;
     if (!u || u.startsWith("bavarium://") || u.includes("settings.html")) continue;
     if (u.includes("newtab.html")) continue;
-    if (/localhost|127\.0\.0\.1/.test(u) && !normalizeMatchUrl(u)) continue;
     const key = normalizeMatchUrl(u);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push({
       id: "recent-" + key,
       url: u,
-      title: h.title || "",
-      faviconUrl: faviconForUrl(u),
+      title: row.title,
+      displayTitle: row.title,
+      faviconUrl: row.faviconUrl,
       favorite: false,
     });
     if (out.length >= SITE_SLOTS) break;
@@ -337,12 +388,22 @@ function closeFavoriteModal() {
 }
 
 async function saveFavoriteFromModal() {
-  const title = favoriteTitle.value.trim() || "Favorite";
-  const url = favoriteUrl.value.trim();
+  let title = favoriteTitle.value.trim() || "Favorite";
+  let url = favoriteUrl.value.trim();
   if (!url) {
     alert("URL is required.");
     return;
   }
+  try {
+    const meta = await ipcRenderer.invoke("normalize-site-tile-meta", {
+      url,
+      title,
+    });
+    if (meta && meta.isRemote) {
+      url = meta.url;
+      title = meta.title || title;
+    }
+  } catch (_) {}
   const faviconUrl = faviconForUrl(url);
   if (editingFavoriteId) {
     const i = favorites.findIndex((f) => f.id === editingFavoriteId);

@@ -85,6 +85,7 @@ app.use(express.static(publicDir));
 app.get(["/bavarium-nav", "/bavarium-nav/"], (_req, res) => {
 	res.sendFile(join(publicDir, "index.html"));
 });
+
 // Load vendor files last.
 // The vendor's uv.config.js won't conflict with our uv.config.js inside the publicPath directory.
 app.use("/uv/", express.static(uvPath));

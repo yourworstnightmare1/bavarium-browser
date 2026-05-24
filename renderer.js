@@ -313,29 +313,146 @@ function primeTabGuestPageFromDestination(te, destinationUrl) {
   updateUrlBarForTab(te);
 }
 
-function updateUrlBarForTab(te) {
-  if (!te || !currentTab || currentTab.id !== te.id) return;
-  if (urlOmniboxUserEditing) return;
-  const urlInput = document.getElementById("url");
-  if (!urlInput) return;
+function tabDisplayUrlForOmnibox(te) {
+  if (!te) return "";
+  try {
+    const raw = cleanUrl(webviewDisplayUrl(te.view));
+    if (raw.startsWith("bavarium://") || raw.startsWith("file://")) {
+      return raw;
+    }
+  } catch (_) {}
   const canonical = normalizeRemoteUrl(te.guestPage?.url || "");
-  if (canonical) {
-    urlInput.value = canonical;
-    return;
-  }
-  if (te.view && viewLooksLikeProxyShell(te.view)) {
-    return;
-  }
+  if (canonical) return canonical;
+  if (te.view && viewLooksLikeProxyShell(te.view)) return "";
   try {
     const cleaned = cleanUrl(webviewDisplayUrl(te.view));
     if (
       cleaned.includes("localhost") ||
       cleaned.startsWith("http://127.0.0.1")
     ) {
-      return;
+      return "";
     }
-    urlInput.value = cleaned;
+    return cleaned;
+  } catch (_) {
+    return "";
+  }
+}
+
+const SITE_INFO_KINDS = {
+  file: {
+    label: "Local file",
+    message: "This is a file on your device.",
+    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M3 9h18" stroke="currentColor" stroke-width="1.75"/></svg>`,
+  },
+  bavarium: {
+    label: "Bavarium page",
+    message: "This is a Bavarium page.",
+    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="12" cy="5" rx="8" ry="3" stroke="currentColor" stroke-width="1.75"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" stroke="currentColor" stroke-width="1.75"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" stroke="currentColor" stroke-width="1.75"/></svg>`,
+  },
+  reblock: {
+    label: "Official ReBlock website",
+    message: "This is an official ReBlock website.",
+    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.75"/><path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  },
+  https: {
+    label: "Secure connection",
+    message: "Your connection to this site is secure and encrypted with HTTPS.",
+    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 4 5v6c0 5.25 3.5 10.15 8 11.35 4.5-1.2 8-6.1 8-11.35V5L12 2z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg>`,
+  },
+};
+
+function isOfficialReblockSiteUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    if (host === "sites.google.com" && path.startsWith("/view/reblock")) {
+      return true;
+    }
+    if (host === "yourworstnightmare1.github.io") {
+      return true;
+    }
   } catch (_) {}
+  return false;
+}
+
+function classifySiteInfoKind(url) {
+  if (!url || typeof url !== "string") return null;
+  const raw = url.trim();
+  if (raw.startsWith("file://")) return "file";
+  if (raw.startsWith("bavarium://")) return "bavarium";
+  let href = raw;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+    href = `https://${href}`;
+  }
+  try {
+    const u = new URL(href);
+    if (isOfficialReblockSiteUrl(u.href)) return "reblock";
+    if (u.protocol === "https:") return "https";
+  } catch (_) {}
+  return null;
+}
+
+let siteInfoPopoverOpen = false;
+let currentSiteInfoKind = null;
+
+function closeSiteInfoPopover() {
+  const pop = document.getElementById("siteInfoPopover");
+  const btn = document.getElementById("btnSiteInfo");
+  if (pop) pop.classList.remove("open");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  siteInfoPopoverOpen = false;
+}
+
+function updateSiteInfoIndicatorForTab(te) {
+  const anchor = document.getElementById("siteInfoAnchor");
+  const btn = document.getElementById("btnSiteInfo");
+  const iconEl = document.getElementById("siteInfoIcon");
+  const textEl = document.getElementById("siteInfoPopoverText");
+  if (!anchor || !btn || !iconEl || !textEl) return;
+
+  const active =
+    te && currentTab && currentTab.id === te.id && !urlOmniboxUserEditing;
+  const kind = active ? classifySiteInfoKind(tabDisplayUrlForOmnibox(te)) : null;
+
+  if (!kind) {
+    anchor.hidden = true;
+    currentSiteInfoKind = null;
+    closeSiteInfoPopover();
+    btn.className = "";
+    return;
+  }
+
+  const info = SITE_INFO_KINDS[kind];
+  anchor.hidden = false;
+  btn.className = `kind-${kind}`;
+  btn.title = info.label;
+  btn.setAttribute("aria-label", info.label);
+  iconEl.innerHTML = info.icon;
+  textEl.textContent = info.message;
+
+  if (currentSiteInfoKind !== kind) {
+    currentSiteInfoKind = kind;
+    closeSiteInfoPopover();
+  }
+}
+
+function updateUrlBarForTab(te) {
+  if (!te || !currentTab || currentTab.id !== te.id) return;
+  if (urlOmniboxUserEditing) return;
+  const urlInput = document.getElementById("url");
+  if (!urlInput) return;
+  const displayUrl = tabDisplayUrlForOmnibox(te);
+  if (displayUrl) {
+    urlInput.value = displayUrl;
+    updateSiteInfoIndicatorForTab(te);
+    return;
+  }
+  if (te.view && viewLooksLikeProxyShell(te.view)) {
+    updateSiteInfoIndicatorForTab(te);
+    return;
+  }
+  updateSiteInfoIndicatorForTab(te);
 }
 
 function attachHoldAltMenuListeners(target) {
@@ -1004,6 +1121,9 @@ function newTab(url = null, options = {}) {
       const id = view.getWebContentsId();
       const te0 = tabEntryForView(view);
       if (te0) te0.guestWebContentsId = id;
+      if (te0 && typeof te0.zoomFactor === "number" && te0.zoomFactor !== 1) {
+        applyTabZoom(te0, te0.zoomFactor);
+      }
       const wc = webContents?.fromId?.(id);
       if (wc && !wc.isDestroyed() && !wc.__bavariumInternalNavHook) {
         wc.__bavariumInternalNavHook = true;
@@ -1205,6 +1325,7 @@ function newTab(url = null, options = {}) {
     fullTitle: "",
     guestPage: null,
     faviconImg,
+    zoomFactor: TAB_ZOOM_DEFAULT,
   };
   tabs.push(tabEntry);
   refreshTabTooltip(tabEntry);
@@ -1220,6 +1341,127 @@ function newTab(url = null, options = {}) {
   }
 }
 
+
+const TAB_ZOOM_MIN = 0.25;
+const TAB_ZOOM_MAX = 5;
+const TAB_ZOOM_STEP = 0.1;
+const TAB_ZOOM_DEFAULT = 1;
+
+function shellEditableHasFocus() {
+  const el = document.activeElement;
+  if (!el || el === document.body) return false;
+  const tag = el.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (el.isContentEditable) return true;
+  return false;
+}
+
+function applyTabZoom(te, factor) {
+  if (!te || !te.view) return TAB_ZOOM_DEFAULT;
+  const next = Math.min(
+    TAB_ZOOM_MAX,
+    Math.max(TAB_ZOOM_MIN, Number(factor) || TAB_ZOOM_DEFAULT)
+  );
+  te.zoomFactor = next;
+  try {
+    if (typeof te.view.setZoomFactor === "function") {
+      te.view.setZoomFactor(next);
+      updateZoomPopoverUI();
+      return next;
+    }
+  } catch (_) {}
+  const guestId =
+    te.guestWebContentsId ??
+    (typeof te.view.getWebContentsId === "function"
+      ? te.view.getWebContentsId()
+      : null);
+  if (guestId != null) {
+    void ipcRenderer.invoke("bavarium-set-guest-zoom", {
+      webContentsId: guestId,
+      factor: next,
+    });
+  }
+  updateZoomPopoverUI();
+  return next;
+}
+
+function formatZoomPercent(factor) {
+  return `${Math.round((Number(factor) || TAB_ZOOM_DEFAULT) * 100)}%`;
+}
+
+function currentTabZoomFactor() {
+  if (!currentTab) return TAB_ZOOM_DEFAULT;
+  return typeof currentTab.zoomFactor === "number"
+    ? currentTab.zoomFactor
+    : TAB_ZOOM_DEFAULT;
+}
+
+function updateZoomPopoverUI() {
+  const factor = currentTabZoomFactor();
+  const label = formatZoomPercent(factor);
+  const pctEl = document.getElementById("zoomPopoverPercent");
+  const slider = document.getElementById("zoomPopoverSlider");
+  const reset = document.getElementById("zoomPopoverReset");
+  const btn = document.getElementById("btnZoom");
+  const toolbarLabel = document.getElementById("zoomToolbarLabel");
+  if (pctEl) pctEl.textContent = label;
+  if (toolbarLabel) toolbarLabel.textContent = label;
+  if (btn) btn.setAttribute("title", `Page zoom (${label})`);
+  if (slider) {
+    const pct = Math.round(
+      Math.min(TAB_ZOOM_MAX, Math.max(TAB_ZOOM_MIN, factor)) * 100
+    );
+    slider.value = String(pct);
+  }
+  if (reset) {
+    reset.disabled = Math.abs(factor - TAB_ZOOM_DEFAULT) < 0.001;
+  }
+}
+
+function setCurrentTabZoom(factor) {
+  return applyTabZoom(currentTab, factor);
+}
+
+let zoomPopoverOpen = false;
+
+function closeZoomPopover() {
+  const pop = document.getElementById("zoomPopover");
+  const btn = document.getElementById("btnZoom");
+  if (pop) pop.classList.remove("open");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  zoomPopoverOpen = false;
+}
+
+function toggleZoomPopover() {
+  const pop = document.getElementById("zoomPopover");
+  const btn = document.getElementById("btnZoom");
+  if (!pop || !btn) return;
+
+  if (zoomPopoverOpen) {
+    closeZoomPopover();
+    return;
+  }
+
+  closeDownloadsShelf();
+  closeToolbarMenu();
+
+  updateZoomPopoverUI();
+  pop.classList.add("open");
+  btn.setAttribute("aria-expanded", "true");
+  zoomPopoverOpen = true;
+}
+
+function adjustCurrentTabZoom(delta) {
+  const te = currentTab;
+  if (!te?.view) return TAB_ZOOM_DEFAULT;
+  const cur =
+    typeof te.zoomFactor === "number" ? te.zoomFactor : TAB_ZOOM_DEFAULT;
+  return applyTabZoom(te, cur + delta);
+}
+
+function resetCurrentTabZoom() {
+  return applyTabZoom(currentTab, TAB_ZOOM_DEFAULT);
+}
 
 function closeFindInPage() {
   document.body.classList.remove("find-open");
@@ -1295,6 +1537,7 @@ function switchTab(id) {
   refreshStaleProxyTabIfNeeded(selected);
   startGuestPageMetaWatcher(selected);
   updateUrlBarForTab(selected);
+  updateZoomPopoverUI();
   scheduleGuestTabPageMetaRefresh(selected.view);
 
   if (document.body.classList.contains("devtools-open") && devtoolsOpenForTabId !== id) {
@@ -1608,12 +1851,54 @@ function appendHistoryForNavigation(view, rawUrl) {
   if (s.historyEnabled === false) return;
   const cleaned = cleanUrl(rawUrl);
   if (!shouldRecordHistoryUrl(cleaned)) return;
+
+  let url = cleaned;
   let t = cleaned;
   try {
-    if (view.getTitle) t = view.getTitle() || cleaned;
+    if (view.getTitle) t = (view.getTitle() || "").trim() || cleaned;
   } catch (_) {}
+
+  const te = tabEntryForView(view);
+  if (te && te.guestPage && te.guestPage.url) {
+    url = te.guestPage.url;
+    t =
+      (te.fullTitle && te.fullTitle.trim()) ||
+      (te.guestPage.title && te.guestPage.title.trim()) ||
+      t;
+  } else if (viewLooksLikeProxyShell(view)) {
+    const inner = proxyShellTargetFromUrl(cleaned);
+    if (inner) {
+      const norm = normalizeRemoteUrl(inner);
+      if (norm) {
+        url = norm;
+        try {
+          t = new URL(norm).hostname.replace(/^www\./i, "");
+        } catch (_) {}
+      }
+    }
+  }
+
+  if (isProxyLandingTitle(t) || !t) {
+    try {
+      t = new URL(url).hostname.replace(/^www\./i, "");
+    } catch (_) {
+      t = url;
+    }
+  }
+
+  if (!shouldRecordHistoryUrl(url)) return;
+  try {
+    const u = new URL(url);
+    if (
+      (u.hostname === "localhost" || u.hostname === "127.0.0.1") &&
+      !proxyShellTargetFromUrl(url)
+    ) {
+      return;
+    }
+  } catch (_) {}
+
   ipcRenderer.send("history-append", {
-    url: cleaned,
+    url,
     title: t,
     ts: Date.now(),
   });
@@ -2474,12 +2759,166 @@ async function refreshGuestTabPageMeta(view) {
   }
 }
 
+let downloadsShelfOpen = false;
+
+function escapeShelfHtml(text) {
+  const d = document.createElement("div");
+  d.textContent = text == null ? "" : String(text);
+  return d.innerHTML;
+}
+
+function formatShelfBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+  if (n < 1024 * 1024 * 1024) {
+    return `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  }
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function downloadShelfStateLabel(row) {
+  if (row.active) {
+    if (row.state === "interrupted") return "Failed";
+    if (row.totalBytes > 0) {
+      const pct = Math.min(
+        100,
+        Math.round((row.receivedBytes / row.totalBytes) * 100)
+      );
+      return `${pct}% · ${formatShelfBytes(row.receivedBytes)} / ${formatShelfBytes(row.totalBytes)}`;
+    }
+    if (row.receivedBytes > 0) {
+      return `${formatShelfBytes(row.receivedBytes)} downloaded`;
+    }
+    return "In progress…";
+  }
+  if (row.state === "completed") return "Completed";
+  if (row.state === "cancelled") return "Cancelled";
+  if (row.state === "interrupted") return "Failed";
+  return row.state ? String(row.state) : "";
+}
+
+function closeDownloadsShelf() {
+  const pop = document.getElementById("downloadsPopover");
+  const btn = document.getElementById("btnDownloads");
+  if (pop) pop.classList.remove("open");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  downloadsShelfOpen = false;
+}
+
 function closeToolbarMenu() {
   const menu = document.getElementById("menu");
   if (menu) menu.style.display = "none";
 }
 
+async function refreshDownloadsShelf() {
+  const listEl = document.getElementById("downloadsShelfList");
+  const btn = document.getElementById("btnDownloads");
+  if (!listEl) return;
+
+  let payload = { active: [], recent: [] };
+  try {
+    payload = await ipcRenderer.invoke("get-downloads-shelf");
+  } catch (_) {}
+
+  const active = Array.isArray(payload.active) ? payload.active : [];
+  const recent = Array.isArray(payload.recent) ? payload.recent : [];
+  const activePaths = new Set(
+    active.map((r) => (r.path || "").trim()).filter(Boolean)
+  );
+  const rows = [
+    ...active,
+    ...recent
+      .filter((r) => {
+        const p = (r.path || "").trim();
+        return !p || !activePaths.has(p);
+      })
+      .slice(0, 5),
+  ];
+
+  if (btn) {
+    btn.classList.toggle("has-active", active.length > 0);
+  }
+
+  if (!rows.length) {
+    listEl.innerHTML =
+      '<div class="downloads-shelf-empty">No recent downloads</div>';
+    return;
+  }
+
+  const iconSrc = "assets/menu-icons/downloads.png";
+  listEl.innerHTML = rows
+    .map((row) => {
+      const name = escapeShelfHtml(row.name || "Download");
+      const meta = escapeShelfHtml(downloadShelfStateLabel(row));
+      let progress = "";
+      if (row.active && row.totalBytes > 0) {
+        const pct = Math.min(
+          100,
+          Math.round((row.receivedBytes / row.totalBytes) * 100)
+        );
+        progress = `<div class="downloads-shelf-progress" aria-hidden="true"><span style="width:${pct}%"></span></div>`;
+      } else if (row.active) {
+        progress =
+          '<div class="downloads-shelf-progress" aria-hidden="true"><span style="width:35%"></span></div>';
+      }
+      const pathEnc = encodeURIComponent(row.path || "");
+      return `<button type="button" class="downloads-shelf-row" role="listitem" data-active="${row.active ? "1" : "0"}" data-path="${pathEnc}" data-state="${escapeShelfHtml(row.state || "")}">
+        <img class="downloads-shelf-icon" src="${iconSrc}" width="20" height="20" alt="" aria-hidden="true" />
+        <div class="downloads-shelf-body">
+          <div class="downloads-shelf-name">${name}</div>
+          <div class="downloads-shelf-meta">${meta}</div>
+          ${progress}
+        </div>
+      </button>`;
+    })
+    .join("");
+
+  listEl.querySelectorAll(".downloads-shelf-row").forEach((rowBtn) => {
+    rowBtn.addEventListener("click", () => {
+      const isActive = rowBtn.getAttribute("data-active") === "1";
+      const enc = rowBtn.getAttribute("data-path");
+      const filePath = enc ? decodeURIComponent(enc) : "";
+      const state = rowBtn.getAttribute("data-state") || "";
+      closeDownloadsShelf();
+      if (!isActive && filePath && state === "completed") {
+        void ipcRenderer.invoke("reveal-download", filePath);
+        return;
+      }
+      newTab("bavarium://downloads");
+    });
+  });
+}
+
+function toggleDownloadsShelf() {
+  const pop = document.getElementById("downloadsPopover");
+  const btn = document.getElementById("btnDownloads");
+  if (!pop || !btn) return;
+
+  if (downloadsShelfOpen) {
+    closeDownloadsShelf();
+    closeToolbarMenu();
+    return;
+  }
+
+  closeZoomPopover();
+  closeToolbarMenu();
+
+  pop.classList.add("open");
+  btn.setAttribute("aria-expanded", "true");
+  downloadsShelfOpen = true;
+  void refreshDownloadsShelf();
+}
+
+function openDownloadManagerFromShelf() {
+  closeDownloadsShelf();
+  newTab("bavarium://downloads");
+}
+
 function toggleMenu() {
+  closeDownloadsShelf();
+  closeZoomPopover();
   const menu = document.getElementById("menu");
   if (!menu) return;
   menu.style.display = menu.style.display === "block" ? "none" : "block";
@@ -3161,6 +3600,110 @@ window.onload = async () => {
   if (btnAddBm) {
     btnAddBm.addEventListener("click", () => openBookmarkEditorForCurrentTab());
   }
+
+  const btnZoom = document.getElementById("btnZoom");
+  const zoomOut = document.getElementById("zoomPopoverOut");
+  const zoomIn = document.getElementById("zoomPopoverIn");
+  const zoomSlider = document.getElementById("zoomPopoverSlider");
+  const zoomReset = document.getElementById("zoomPopoverReset");
+  if (btnZoom) {
+    btnZoom.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleZoomPopover();
+    });
+  }
+  if (zoomOut) {
+    zoomOut.addEventListener("click", (e) => {
+      e.stopPropagation();
+      adjustCurrentTabZoom(-TAB_ZOOM_STEP);
+    });
+  }
+  if (zoomIn) {
+    zoomIn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      adjustCurrentTabZoom(TAB_ZOOM_STEP);
+    });
+  }
+  if (zoomSlider) {
+    zoomSlider.addEventListener("input", () => {
+      const pct = Number(zoomSlider.value);
+      if (!Number.isFinite(pct)) return;
+      setCurrentTabZoom(pct / 100);
+    });
+  }
+  if (zoomReset) {
+    zoomReset.addEventListener("click", (e) => {
+      e.stopPropagation();
+      resetCurrentTabZoom();
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!zoomPopoverOpen) return;
+    const anchor = document.getElementById("zoomAnchor");
+    if (anchor && !anchor.contains(e.target)) {
+      closeZoomPopover();
+    }
+  });
+  updateZoomPopoverUI();
+
+  const btnSiteInfo = document.getElementById("btnSiteInfo");
+  if (btnSiteInfo) {
+    btnSiteInfo.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const pop = document.getElementById("siteInfoPopover");
+      if (!pop) return;
+      if (siteInfoPopoverOpen) {
+        closeSiteInfoPopover();
+        return;
+      }
+      closeZoomPopover();
+      closeDownloadsShelf();
+      pop.classList.add("open");
+      btnSiteInfo.setAttribute("aria-expanded", "true");
+      siteInfoPopoverOpen = true;
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!siteInfoPopoverOpen) return;
+    const anchor = document.getElementById("siteInfoAnchor");
+    if (anchor && !anchor.contains(e.target)) {
+      closeSiteInfoPopover();
+    }
+  });
+
+  const btnDownloads = document.getElementById("btnDownloads");
+  const downloadsOpenManager = document.getElementById("downloadsShelfOpenManager");
+  if (btnDownloads) {
+    btnDownloads.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleDownloadsShelf();
+    });
+  }
+  if (downloadsOpenManager) {
+    downloadsOpenManager.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDownloadManagerFromShelf();
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!downloadsShelfOpen) return;
+    const anchor = document.getElementById("downloadsAnchor");
+    if (anchor && !anchor.contains(e.target)) {
+      closeDownloadsShelf();
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && downloadsShelfOpen) {
+      closeDownloadsShelf();
+    }
+    if (e.key === "Escape" && zoomPopoverOpen) {
+      closeZoomPopover();
+    }
+    if (e.key === "Escape" && siteInfoPopoverOpen) {
+      closeSiteInfoPopover();
+    }
+  });
+  void refreshDownloadsShelf();
   const bmSave = document.getElementById("bookmarkBtnSave");
   const bmCancel = document.getElementById("bookmarkBtnCancel");
   const bmRemove = document.getElementById("bookmarkBtnRemove");
@@ -3206,6 +3749,7 @@ window.onload = async () => {
     });
     urlInput.addEventListener("blur", () => {
       urlOmniboxUserEditing = false;
+      if (currentTab) updateSiteInfoIndicatorForTab(currentTab);
     });
     urlInput.addEventListener("input", () => {
       urlOmniboxUserEditing = true;
@@ -3243,6 +3787,15 @@ window.onload = async () => {
         break;
       case "reload":
         refresh();
+        break;
+      case "zoom-in":
+        adjustCurrentTabZoom(TAB_ZOOM_STEP);
+        break;
+      case "zoom-out":
+        adjustCurrentTabZoom(-TAB_ZOOM_STEP);
+        break;
+      case "zoom-reset":
+        resetCurrentTabZoom();
         break;
       case "find-in-page":
         openFindInPage();
@@ -3349,6 +3902,34 @@ window.onload = async () => {
     return;
   }
 
+  if (
+    !e.altKey &&
+    !document.body.classList.contains("shell-modal-open") &&
+    (key === "=" || key === "+" || key === "-")
+  ) {
+    if (!shellEditableHasFocus()) {
+      e.preventDefault();
+      if (key === "-") {
+        adjustCurrentTabZoom(-TAB_ZOOM_STEP);
+      } else {
+        adjustCurrentTabZoom(TAB_ZOOM_STEP);
+      }
+    }
+    return;
+  }
+
+  if (
+    !e.altKey &&
+    key === "0" &&
+    !document.body.classList.contains("shell-modal-open")
+  ) {
+    if (!shellEditableHasFocus()) {
+      e.preventDefault();
+      resetCurrentTabZoom();
+    }
+    return;
+  }
+
   if (key === "f") {
     e.preventDefault();
     openFindInPage();
@@ -3406,6 +3987,20 @@ window.onload = async () => {
   }
   });
 
+  document.addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (document.body.classList.contains("shell-modal-open")) return;
+      if (shellEditableHasFocus()) return;
+      if (!currentTab?.view) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? TAB_ZOOM_STEP : -TAB_ZOOM_STEP;
+      adjustCurrentTabZoom(delta);
+    },
+    { passive: false, capture: true }
+  );
+
   const findInput = document.getElementById("findInput");
   if (findInput) {
     let findT;
@@ -3453,6 +4048,7 @@ window.onload = async () => {
   });
 
   ipcRenderer.on("downloads-updated", () => {
+    void refreshDownloadsShelf();
     document.querySelectorAll("webview").forEach((wv) => {
       const src = wv.getAttribute("src") || "";
       if (

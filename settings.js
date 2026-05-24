@@ -89,6 +89,84 @@ function wireIconSelect(wrap, onChange) {
 let portStatusTimer = null;
 let applySettingsTimer = null;
 let settingsFormReady = false;
+let suppressApplySettings = false;
+let applySettingsRunning = false;
+let applySettingsQueued = false;
+
+function normalizePortField(value) {
+  return String(value ?? "").replace(/[^\d]/g, "") || "";
+}
+
+function proxyTypeLabel(type) {
+  return type === "scramjet" ? "Scramjet" : "Ultraviolet";
+}
+
+/** Port field for the proxy type currently selected in the form. */
+function activeProxyPortChanged(prev, next) {
+  const activeType = next.proxyType || "ultraviolet";
+  if (activeType === "scramjet") {
+    return (
+      normalizePortField(next.scramjetPort) !==
+      normalizePortField(prev.scramjetPort)
+    );
+  }
+  return (
+    normalizePortField(next.uvPort) !== normalizePortField(prev.uvPort)
+  );
+}
+
+function revertProxyFormFields(settings) {
+  suppressApplySettings = true;
+  const proxyH = document.getElementById("proxyType");
+  if (proxyH) proxyH.value = settings.proxyType || "ultraviolet";
+  syncIconSelectFromHidden(document.getElementById("proxyTypeIconSelect"));
+  const uv = document.getElementById("uvPort");
+  const sj = document.getElementById("scramjetPort");
+  if (uv) uv.value = settings.uvPort || "8080";
+  if (sj) sj.value = settings.scramjetPort || "3000";
+  syncProxyFieldsVisibility();
+  schedulePortStatusCheck();
+  updateLicensePortLinks();
+  suppressApplySettings = false;
+}
+
+async function confirmProxySettingsChange(prev, next) {
+  const typeChanged = next.proxyType !== prev.proxyType;
+  const portChanged =
+    next.proxyEnabled !== false && activeProxyPortChanged(prev, next);
+
+  if (!typeChanged && !portChanged) return true;
+
+  if (typeChanged) {
+    const label = proxyTypeLabel(next.proxyType);
+    const ok = await ipcRenderer.invoke("show-confirm-prompt", {
+      windowTitle: "Switch proxy",
+      message:
+        `Are you sure you want to switch to ${label}? All opened tabs will be refreshed and downloads may break. Make sure you save any important data before you do this.`,
+      confirmLabel: "Switch",
+    });
+    if (!ok) {
+      revertProxyFormFields(prev);
+      return false;
+    }
+    return true;
+  }
+
+  if (portChanged) {
+    const ok = await ipcRenderer.invoke("show-confirm-prompt", {
+      windowTitle: "Change proxy port",
+      message:
+        "Are you sure you want to change your proxy port? All opened tabs will be refreshed and downloads may break. Make sure you save any important data before you do this.",
+      confirmLabel: "Change port",
+    });
+    if (!ok) {
+      revertProxyFormFields(prev);
+      return false;
+    }
+  }
+
+  return true;
+}
 
 function setSaveStatus(text) {
   const el = document.getElementById("saveStatus");
@@ -96,7 +174,7 @@ function setSaveStatus(text) {
 }
 
 function scheduleApplySettings(options = {}) {
-  if (!settingsFormReady) return;
+  if (!settingsFormReady || suppressApplySettings) return;
   const { delay = 400, silent = true } = options;
   if (applySettingsTimer) clearTimeout(applySettingsTimer);
   applySettingsTimer = setTimeout(() => {
@@ -106,32 +184,63 @@ function scheduleApplySettings(options = {}) {
 }
 
 async function applySettingsNow({ silent = true } = {}) {
-  const next = collectSettingsFromForm();
-  const proxyChanged =
-    next.proxyType !== currentSettings.proxyType ||
-    next.uvPort !== currentSettings.uvPort ||
-    next.scramjetPort !== currentSettings.scramjetPort ||
-    next.transport !== currentSettings.transport ||
-    next.wssServer !== (currentSettings.wssServer || "") ||
-    next.proxyEnabled !== currentSettings.proxyEnabled;
+  if (applySettingsTimer) {
+    clearTimeout(applySettingsTimer);
+    applySettingsTimer = null;
+  }
+  if (applySettingsRunning) {
+    applySettingsQueued = true;
+    return;
+  }
+  applySettingsRunning = true;
+  try {
+    const prev = { ...currentSettings };
+    let next = collectSettingsFromForm();
 
-  currentSettings = next;
-  ipcRenderer.send("save-settings", next);
-  if (proxyChanged) ipcRenderer.send("change-proxy", next);
+    const needsProxyConfirm =
+      next.proxyType !== prev.proxyType ||
+      (next.proxyEnabled !== false && activeProxyPortChanged(prev, next));
 
-  schedulePortStatusCheck();
-  updateLicensePortLinks();
-  await refreshFpsDisplayHint();
-
-  if (!silent) {
-    alert("Settings saved.");
-  } else {
-    setSaveStatus("Saved");
-    setTimeout(() => {
-      if (document.getElementById("saveStatus")?.textContent === "Saved") {
-        setSaveStatus("");
+    if (needsProxyConfirm) {
+      const confirmed = await confirmProxySettingsChange(prev, next);
+      if (!confirmed) {
+        if (!silent) setSaveStatus("");
+        return;
       }
-    }, 2000);
+      next = collectSettingsFromForm();
+    }
+
+    const proxyChanged =
+      next.proxyType !== prev.proxyType ||
+      (next.proxyEnabled !== false && activeProxyPortChanged(prev, next)) ||
+      next.transport !== prev.transport ||
+      next.wssServer !== (prev.wssServer || "") ||
+      next.proxyEnabled !== prev.proxyEnabled;
+
+    currentSettings = next;
+    ipcRenderer.send("save-settings", next);
+    if (proxyChanged) ipcRenderer.send("change-proxy", next);
+
+    schedulePortStatusCheck();
+    updateLicensePortLinks();
+    await refreshFpsDisplayHint();
+
+    if (!silent) {
+      alert("Settings saved.");
+    } else {
+      setSaveStatus("Saved");
+      setTimeout(() => {
+        if (document.getElementById("saveStatus")?.textContent === "Saved") {
+          setSaveStatus("");
+        }
+      }, 2000);
+    }
+  } finally {
+    applySettingsRunning = false;
+    if (applySettingsQueued) {
+      applySettingsQueued = false;
+      void applySettingsNow({ silent });
+    }
   }
 }
 
@@ -1205,6 +1314,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   }
 
   ipcRenderer.on("settings-updated", (_e, payload) => {
+    if (suppressApplySettings || applySettingsRunning) return;
     void syncSettingsFormFromMain(payload);
     syncAboutPrereleaseUi();
     if (document.getElementById("section-about")?.classList.contains("active")) {
@@ -1219,7 +1329,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (!state || typeof state !== "object") return;
     if (state.settings && typeof state.settings === "object") {
       currentSettings = state.settings;
-      applySettingsToForm();
+      if (!suppressApplySettings && !applySettingsRunning) {
+        applySettingsToForm();
+      }
       schedulePortStatusCheck();
       updateLicensePortLinks();
     }
