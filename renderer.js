@@ -2565,6 +2565,29 @@ async function guestWebContentsIdForTab(te) {
   return null;
 }
 
+function tabForGuestWebContentsId(webContentsId) {
+  const id = Number(webContentsId);
+  if (!Number.isFinite(id)) return null;
+  for (const te of tabs) {
+    if (te.guestWebContentsId === id) return te;
+    try {
+      if (te.view && te.view.getWebContentsId?.() === id) {
+        te.guestWebContentsId = id;
+        return te;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function saveCurrentTabPageAs() {
+  const te = currentTab;
+  if (!te || !te.view) return;
+  const guestId = await guestWebContentsIdForTab(te);
+  if (!guestId) return;
+  await ipcRenderer.invoke("bavarium-save-page-as", { webContentsId: guestId });
+}
+
 async function attachDevToolsToTab(te) {
   const hostId = await ensureDevToolsHostReady();
   const guestId = await guestWebContentsIdForTab(te);
@@ -3258,6 +3281,16 @@ window.onload = async () => {
     }
   });
 
+  ipcRenderer.on("bavarium-devtools-hotkey", async (_e, payload) => {
+    const id = payload && payload.webContentsId;
+    const te = tabForGuestWebContentsId(id) || currentTab;
+    if (!te || !te.view) return;
+    if (te.id !== currentTab?.id) {
+      switchTab(te.id);
+    }
+    await openCurrentTabDevTools();
+  });
+
   ipcRenderer.on("bavarium-new-tab-with-url", (_e, payload) => {
     let url = "";
     let background = false;
@@ -3280,6 +3313,29 @@ window.onload = async () => {
   if (!ctrl) return;
 
   const key = e.key.toLowerCase();
+
+  if (
+    !document.body.classList.contains("shell-modal-open") &&
+    !e.shiftKey &&
+    !e.altKey &&
+    key === "s"
+  ) {
+    e.preventDefault();
+    void saveCurrentTabPageAs();
+    return;
+  }
+
+  if (
+    e.shiftKey &&
+    !e.altKey &&
+    key === "i" &&
+    !document.body.classList.contains("shell-modal-open") &&
+    getSettings().enableChromiumDevTools !== false
+  ) {
+    e.preventDefault();
+    void openCurrentTabDevTools();
+    return;
+  }
 
   if (ctrl && e.shiftKey && key === "n") {
     e.preventDefault();

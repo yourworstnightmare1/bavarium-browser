@@ -2,7 +2,7 @@
   "name": "bavarium-browser",
   "productName": "Bavarium Browser",
   "version": "2.0.0-b",
-  "bavariumDisplayVersion": "v2.0b",
+  "bavariumDisplayVersion": "v2.0.0b",
   "description": "Bavarium Browser",
   "main": "main.js",
   "scripts": {

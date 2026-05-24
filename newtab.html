@@ -40,7 +40,10 @@
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
+      width: 100%;
       height: 100%;
+      min-height: 100vh;
+      min-height: 100dvh;
       background: var(--bg);
       color: var(--text);
       font-family: system-ui, "Segoe UI", Roboto, sans-serif;
@@ -48,18 +51,20 @@
     body {
       display: flex;
       flex-direction: column;
-      min-height: 100%;
+      min-height: 100vh;
+      min-height: 100dvh;
     }
     .page {
-      flex: 1;
+      flex: 1 1 auto;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 48px 24px 88px;
+      padding: 48px 24px 24px;
       width: 100%;
       max-width: 920px;
       margin: 0 auto;
+      min-height: 0;
     }
     .brand {
       display: flex;
@@ -218,21 +223,25 @@
     .tile.site.is-favorite:hover .tile-fav-badge { opacity: 1; }
     .tile-fav-badge:hover { color: var(--accent-a); background: var(--tile-hover); }
     .footer {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 10px 16px;
       font-size: 12px;
       color: var(--muted);
-      background: linear-gradient(transparent, var(--bg) 40%);
+      background: var(--bg);
       pointer-events: none;
     }
     .footer > * { pointer-events: auto; }
-    .footer-version { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    .footer-version {
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      color: var(--muted);
+      max-width: min(72vw, 720px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .footer-github {
       display: inline-flex;
       align-items: center;

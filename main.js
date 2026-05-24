@@ -1801,6 +1801,74 @@ function guestWebviewIsIncognito(wc) {
   }
 }
 
+function guestShortcutModifierDown(input) {
+  return process.platform === 'darwin' ? !!input.meta : !!input.control;
+}
+
+async function saveGuestWebContentsAs(wc) {
+  if (!wc || wc.isDestroyed()) return;
+  const win = browserWindowForGuestWebContents(wc);
+  let rawUrl = '';
+  try {
+    rawUrl = wc.getURL() || '';
+  } catch (_) {}
+  let defaultName = 'page.html';
+  try {
+    const t = (wc.getTitle() || '').trim();
+    if (t) {
+      const safe = t.replace(/[/\\?%*:|"<>]/g, '').slice(0, 100);
+      if (safe) defaultName = `${safe}.html`;
+    }
+  } catch (_) {}
+  const r = await dialog.showSaveDialog(win || dialogParentWindow(), {
+    title: 'Save Page As',
+    defaultPath: defaultName,
+    filters: [
+      { name: 'Web Page, Complete', extensions: ['html', 'htm'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  if (r.canceled || !r.filePath) return;
+  let savePath = r.filePath;
+  if (!/\.html?$/i.test(savePath)) {
+    savePath += '.html';
+  }
+  try {
+    await wc.savePage(savePath, 'HTMLComplete');
+    if (!guestWebviewIsIncognito(wc)) {
+      appendDownloadRecord({
+        name: path.basename(savePath),
+        path: savePath,
+        state: 'completed',
+        url: rawUrl,
+      });
+    }
+  } catch (e) {
+    console.warn('Save page:', e);
+  }
+}
+
+function bindGuestWebviewShortcuts(wc) {
+  wc.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || !guestShortcutModifierDown(input)) return;
+    const key = (input.key || '').toLowerCase();
+
+    if (!input.shift && !input.alt && key === 's') {
+      event.preventDefault();
+      void saveGuestWebContentsAs(wc);
+      return;
+    }
+
+    if (input.shift && !input.alt && key === 'i' && chromiumDevToolsEnabled()) {
+      event.preventDefault();
+      const host = wc.hostWebContents;
+      if (host && !host.isDestroyed()) {
+        host.send('bavarium-devtools-hotkey', { webContentsId: wc.id });
+      }
+    }
+  });
+}
+
 function registerGuestWebviewContextMenu() {
   app.on('web-contents-created', (_event, wc) => {
     wc.once('destroyed', () => {
@@ -1809,6 +1877,7 @@ function registerGuestWebviewContextMenu() {
     });
 
     if (wc.getType() !== 'webview') return;
+    bindGuestWebviewShortcuts(wc);
     const reinject = () => injectFrameRateCapOnWebContents(wc);
     reinject();
     wc.on('did-finish-load', reinject);
@@ -1883,6 +1952,7 @@ async function popupGuestWebviewContextMenu(wc, params) {
   const template = [
     {
       label: 'Copy',
+      accelerator: 'CommandOrControl+C',
       enabled: !!editFlags.canCopy,
       click: () => {
         try {
@@ -1892,6 +1962,7 @@ async function popupGuestWebviewContextMenu(wc, params) {
     },
     {
       label: 'Paste',
+      accelerator: 'CommandOrControl+V',
       enabled: !!editFlags.canPaste,
       click: () => {
         try {
@@ -1977,41 +2048,9 @@ async function popupGuestWebviewContextMenu(wc, params) {
         { type: 'separator' },
         {
           label: 'Save As…',
-          click: async () => {
-            let defaultName = 'page.html';
-            try {
-              const t = (wc.getTitle() || '').trim();
-              if (t) {
-                const safe = t.replace(/[/\\?%*:|"<>]/g, '').slice(0, 100);
-                if (safe) defaultName = `${safe}.html`;
-              }
-            } catch (_) {}
-            const r = await dialog.showSaveDialog(win || dialogParentWindow(), {
-              title: 'Save Page As',
-              defaultPath: defaultName,
-              filters: [
-                { name: 'Web Page, Complete', extensions: ['html', 'htm'] },
-                { name: 'All Files', extensions: ['*'] },
-              ],
-            });
-            if (r.canceled || !r.filePath) return;
-            let savePath = r.filePath;
-            if (!/\.html?$/i.test(savePath)) {
-              savePath += '.html';
-            }
-            try {
-              await wc.savePage(savePath, 'HTMLComplete');
-              if (!guestWebviewIsIncognito(wc)) {
-                appendDownloadRecord({
-                  name: path.basename(savePath),
-                  path: savePath,
-                  state: 'completed',
-                  url: rawUrl,
-                });
-              }
-            } catch (e) {
-              console.warn('Save page:', e);
-            }
+          accelerator: 'CommandOrControl+S',
+          click: () => {
+            void saveGuestWebContentsAs(wc);
           },
         },
         {
@@ -2029,6 +2068,7 @@ async function popupGuestWebviewContextMenu(wc, params) {
           ? [
               {
                 label: 'Inspect Element',
+                accelerator: 'CommandOrControl+Shift+I',
                 click: () => {
                   try {
                     wc.inspectElement(params.x, params.y);
@@ -3169,6 +3209,55 @@ ipcMain.handle('show-browser-update-prompt', async (_event, result) => {
     (result && result.channel === 'prerelease');
   return promptBrowserUpdateIfAvailable(result, trackPre);
 });
+
+function formatHostPlatformArchLabel() {
+  const archRaw = process.arch || 'unknown';
+  const arch =
+    archRaw === 'x64' ? 'x64' : archRaw === 'arm64' ? 'arm64' : archRaw;
+
+  if (process.platform === 'win32') {
+    const parts = String(os.release() || '').split('.');
+    const buildNum = parseInt(parts[2], 10) || 0;
+    const name = buildNum >= 22000 ? 'Windows 11' : 'Windows 10';
+    return `${name} [${arch}]`;
+  }
+  if (process.platform === 'darwin') {
+    const darwinMajor = parseInt(String(os.release()).split('.')[0], 10) || 0;
+    let name = 'macOS';
+    if (darwinMajor >= 24) name = 'macOS 15';
+    else if (darwinMajor >= 23) name = 'macOS 14';
+    else if (darwinMajor >= 22) name = 'macOS 13';
+    return `${name} [${arch}]`;
+  }
+  if (process.platform === 'linux') {
+    const distro = (typeof os.type === 'function' && os.type()) || 'Linux';
+    return `${distro} [${arch}]`;
+  }
+  return `${process.platform} [${arch}]`;
+}
+
+function getNewtabFooterInfo() {
+  const pkg = readAppPackageJson();
+  const settings = mergedSettingsFromDisk();
+  const version = pkg.bavariumDisplayVersion || '';
+  const platform = formatHostPlatformArchLabel();
+  let proxyLabel = 'Service Inactive';
+  if (
+    settings.proxyEnabled !== false &&
+    proxyChildIsRunning() &&
+    currentProxyListenPort != null
+  ) {
+    proxyLabel = `localhost:${currentProxyListenPort}`;
+  }
+  return {
+    appName: pkg.productName || APP_DISPLAY_NAME,
+    version,
+    platform,
+    proxyLabel,
+  };
+}
+
+ipcMain.handle('get-newtab-footer-info', () => getNewtabFooterInfo());
 
 ipcMain.handle('get-homepage-favorites', () => readHomepageFavoritesFile());
 

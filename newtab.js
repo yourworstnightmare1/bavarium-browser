@@ -85,21 +85,34 @@ async function loadSettings() {
   } catch (_) {}
 }
 
-async function loadVersionFooter() {
+function formatFooterStatusLine(info) {
+  if (!info || typeof info !== "object") {
+    return "Bavarium Browser | Service Inactive";
+  }
+  const name = info.appName || "Bavarium Browser";
+  const version = info.version ? ` ${info.version}` : "";
+  const platform = info.platform ? ` ${info.platform}` : "";
+  const proxy = info.proxyLabel || "Service Inactive";
+  return `${name}${version}${platform} | ${proxy}`;
+}
+
+async function loadFooterStatus() {
   footerGithub.href = GITHUB_REPO;
   try {
-    const rows = await ipcRenderer.invoke("get-framework-versions");
-    const bav = Array.isArray(rows)
-      ? rows.find((r) => r && /bavarium/i.test(r.name || ""))
-      : null;
-    const ver =
-      (bav && (bav.detail || bav.version)) ||
-      (bav && bav.version) ||
-      "Bavarium Browser";
-    footerVersion.textContent = ver;
+    const info = await ipcRenderer.invoke("get-newtab-footer-info");
+    footerVersion.textContent = formatFooterStatusLine(info);
   } catch {
-    footerVersion.textContent = "Bavarium Browser";
+    footerVersion.textContent = "Bavarium Browser | Service Inactive";
   }
+}
+
+let footerStatusPollTimer = null;
+
+function startFooterStatusPoll() {
+  if (footerStatusPollTimer) return;
+  footerStatusPollTimer = setInterval(() => {
+    void loadFooterStatus();
+  }, 2500);
 }
 
 async function loadFavorites() {
@@ -416,6 +429,11 @@ document.addEventListener("keydown", (e) => {
 
 ipcRenderer.on("settings-updated", () => {
   void loadSettings();
+  void loadFooterStatus();
+});
+
+ipcRenderer.on("proxy-port-state", () => {
+  void loadFooterStatus();
 });
 
 ipcRenderer.on("browser-data-cleared", () => {
@@ -424,7 +442,8 @@ ipcRenderer.on("browser-data-cleared", () => {
 
 void (async () => {
   await loadSettings();
-  await loadVersionFooter();
+  await loadFooterStatus();
+  startFooterStatusPoll();
   await refreshTiles();
   searchInput.focus();
 })();
