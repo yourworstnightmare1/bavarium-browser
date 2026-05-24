@@ -119,6 +119,15 @@ function formatFooterStatusLine(info) {
   return `${name}${version}${platform} | ${proxy}`;
 }
 
+function openExternalUrl(url) {
+  ipcRenderer.sendToHost("bavarium-open-external-url", url);
+}
+
+footerGithub.addEventListener("click", (e) => {
+  e.preventDefault();
+  openExternalUrl(GITHUB_REPO);
+});
+
 async function loadFooterStatus() {
   footerGithub.href = GITHUB_REPO;
   try {

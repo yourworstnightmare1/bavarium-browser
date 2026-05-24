@@ -1243,6 +1243,23 @@ function normalizeHomepageFromDisk(h) {
   return h || 'bavarium';
 }
 
+function normalizeExternalLinkOpenPreference(raw) {
+  if (raw === 'external' || raw === 'bavarium') return raw;
+  return 'ask';
+}
+
+function isBavariumShellFilePageUrl(pageUrl) {
+  if (!pageUrl || typeof pageUrl !== 'string') return false;
+  try {
+    const u = new URL(pageUrl);
+    if (u.protocol !== 'file:') return false;
+    const p = u.pathname.replace(/\\/g, '/').toLowerCase();
+    return p.endsWith('/newtab.html') || p.endsWith('/settings.html');
+  } catch {
+    return false;
+  }
+}
+
 function mergedSettingsFromDisk() {
   const s = loadSettings();
   return {
@@ -1258,6 +1275,9 @@ function mergedSettingsFromDisk() {
     askBeforeDownload: s.askBeforeDownload !== false,
     downloadPath: s.downloadPath || '',
     trackPreReleaseUpdates: s.trackPreReleaseUpdates === true,
+    externalLinkOpenPreference: normalizeExternalLinkOpenPreference(
+      s.externalLinkOpenPreference
+    ),
     enableChromiumDevTools: s.enableChromiumDevTools !== false,
     enablePerformanceGraph: s.enablePerformanceGraph === true,
     fpsLimitEnabled: s.fpsLimitEnabled === true,
@@ -2274,7 +2294,24 @@ function registerGuestWebviewContextMenu() {
     wc.on('did-navigate-in-page', reinject);
     wc.on('will-navigate', (event, navUrl) => {
       const url = typeof navUrl === 'string' ? navUrl : '';
-      if (!url || url.startsWith('bavarium://') || isHttpUrl(url)) return;
+      if (!url || url.startsWith('bavarium://')) return;
+      if (isHttpUrl(url)) {
+        let guestPageUrl = '';
+        try {
+          guestPageUrl = wc.getURL();
+        } catch (_) {}
+        if (isBavariumShellFilePageUrl(guestPageUrl)) {
+          event.preventDefault();
+          const host = wc.hostWebContents;
+          if (host && !host.isDestroyed()) {
+            host.send('bavarium-shell-external-link', {
+              url,
+              incognito: guestWebviewIsIncognito(wc),
+            });
+          }
+        }
+        return;
+      }
       event.preventDefault();
       openExternalUrlFromGuest(wc, url);
     });
@@ -2307,11 +2344,23 @@ function registerGuestWebviewContextMenu() {
       const host = wc.hostWebContents;
       if (host && !host.isDestroyed()) {
         const background = details.disposition === 'background-tab';
-        host.send('bavarium-new-tab-with-url', {
-          url: openUrl,
-          background,
-          incognito: guestWebviewIsIncognito(wc),
-        });
+        let guestPageUrl = '';
+        try {
+          guestPageUrl = wc.getURL();
+        } catch (_) {}
+        if (isBavariumShellFilePageUrl(guestPageUrl)) {
+          host.send('bavarium-shell-external-link', {
+            url: openUrl,
+            background,
+            incognito: guestWebviewIsIncognito(wc),
+          });
+        } else {
+          host.send('bavarium-new-tab-with-url', {
+            url: openUrl,
+            background,
+            incognito: guestWebviewIsIncognito(wc),
+          });
+        }
       }
       return { action: 'deny' };
     });

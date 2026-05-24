@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none';" />
   <title>Bavarium Browser</title>
   <style>
     html, body {
@@ -644,8 +645,8 @@
       align-items: center;
       gap: 6px;
       padding: 4px 8px 6px;
-      background: #ececec;
-      border-bottom: 1px solid #c8c8c8;
+      background: #292a2d;
+      border-bottom: 1px solid #3c4043;
       min-height: 34px;
     }
     #bookmarkbar.bookmarkbar-empty {
@@ -666,7 +667,7 @@
       flex-shrink: 0;
       border-radius: 3px;
       object-fit: contain;
-      background: #f0f0f0;
+      background: #3c4043;
     }
     .bookmark-item {
       flex-shrink: 0;
@@ -675,16 +676,16 @@
       gap: 6px;
       max-width: 220px;
       padding: 4px 8px;
-      background: #fff;
-      border: 1px solid #bbb;
+      background: #3c4043;
+      border: 1px solid #5f6368;
       border-radius: 6px;
       font-size: 12px;
       cursor: pointer;
-      color: #1a1a1a;
+      color: #e8eaed;
     }
     .bookmark-item:hover {
-      background: #f5f5f5;
-      border-color: #999;
+      background: #48494d;
+      border-color: #80868b;
     }
     .bookmark-item .bm-label {
       overflow: hidden;
@@ -698,6 +699,7 @@
       cursor: pointer;
       padding: 0 2px;
       font-size: 12px;
+      color: #e8eaed;
       opacity: 0.55;
       line-height: 1;
     }
@@ -705,7 +707,8 @@
       opacity: 1;
     }
     #bookmarkModal,
-    #bookmarkManagerModal {
+    #bookmarkManagerModal,
+    #externalLinkModal {
       display: none;
       position: fixed;
       inset: 0;
@@ -717,7 +720,8 @@
       pointer-events: auto;
     }
     #bookmarkModal .dialog,
-    #bookmarkManagerModal .dialog {
+    #bookmarkManagerModal .dialog,
+    #externalLinkModal .dialog {
       /* Match newtab favorites modal (--surface / --bg) */
       --shell-surface: #fff;
       --shell-bg: #f0f2f5;
@@ -743,7 +747,8 @@
     }
     @media (prefers-color-scheme: dark) {
       #bookmarkModal .dialog,
-      #bookmarkManagerModal .dialog {
+      #bookmarkManagerModal .dialog,
+      #externalLinkModal .dialog {
         --shell-surface: #1e1f20;
         --shell-bg: #131314;
         --shell-text: #e8eaed;
@@ -762,8 +767,8 @@
         background: #131314;
       }
     }
-    body.shell-modal-open #views webview.tab-webview,
-    body.shell-modal-open #devtoolsHost {
+    body.shell-modal-open #views webview.tab-webview.shell-modal-suppressed,
+    body.shell-modal-open #devtoolsHost.shell-modal-suppressed {
       visibility: hidden;
     }
     #bookmarkModal .dialog h2,
@@ -771,6 +776,38 @@
       margin: 0 0 14px;
       font-size: 16px;
       font-weight: 600;
+    }
+    #externalLinkModal .external-link-lead {
+      margin: 0 0 10px;
+      font-size: 14px;
+      color: var(--shell-text);
+    }
+    #externalLinkModal .external-link-url {
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.4;
+      word-break: break-all;
+      border-radius: 8px;
+      border: 1px solid var(--shell-border);
+      background: var(--shell-bg);
+      color: var(--shell-muted);
+    }
+    #externalLinkModal .external-link-remember {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 4px;
+      font-size: 13px;
+      color: var(--shell-muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    #externalLinkModal .external-link-remember input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      cursor: pointer;
     }
     #bookmarkManagerList {
       max-height: 50vh;
@@ -853,7 +890,8 @@
       cursor: text;
     }
     #bookmarkModal .dialog .dialog-actions,
-    #bookmarkManagerModal .dialog .dialog-actions {
+    #bookmarkManagerModal .dialog .dialog-actions,
+    #externalLinkModal .dialog .dialog-actions {
       display: flex;
       gap: 8px;
       justify-content: flex-end;
@@ -861,7 +899,8 @@
       flex-wrap: wrap;
     }
     #bookmarkModal .dialog button,
-    #bookmarkManagerModal .dialog button {
+    #bookmarkManagerModal .dialog button,
+    #externalLinkModal .dialog button {
       padding: 8px 14px;
       font-size: 13px;
       border-radius: 8px;
@@ -871,7 +910,8 @@
       color: var(--shell-text);
     }
     #bookmarkModal .dialog button:hover,
-    #bookmarkManagerModal .dialog button:hover {
+    #bookmarkManagerModal .dialog button:hover,
+    #externalLinkModal .dialog button:hover {
       filter: brightness(0.97);
     }
     #bookmarkModal .dialog button.primary,
@@ -883,6 +923,15 @@
     #bookmarkModal .dialog button.primary:hover,
     #bookmarkManagerModal .dialog button.primary:hover {
       filter: brightness(1.05);
+    }
+    #externalLinkModal .dialog button.primary {
+      background: linear-gradient(135deg, #1565c0, #0d47a1);
+      border: none;
+      color: #fff;
+    }
+    #externalLinkModal .dialog button.primary:hover {
+      background: linear-gradient(135deg, #1976d2, #1565c0);
+      filter: none;
     }
     #bookmarkModal .dialog button.danger {
       background: var(--shell-bg);
@@ -1144,6 +1193,21 @@
     <div class="dialog-actions">
       <button type="button" class="primary" id="bookmarkManagerAdd">Add bookmark</button>
       <button type="button" id="bookmarkManagerClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="externalLinkModal" role="dialog" aria-modal="true" aria-label="Open external link">
+  <div class="dialog">
+    <p class="external-link-lead">Bavarium is redirecting you to</p>
+    <p id="externalLinkUrl" class="external-link-url"></p>
+    <label class="external-link-remember">
+      <input type="checkbox" id="externalLinkRemember" />
+      <span>Remember my choice</span>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" id="externalLinkOpenExternal">Open in external browser</button>
+      <button type="button" class="primary" id="externalLinkOpenBavarium">Open in Bavarium</button>
     </div>
   </div>
 </div>

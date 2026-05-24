@@ -51,6 +51,40 @@ const BAVARIUM_LINK_CLICK_PATCH = `(function() {
   }, true);
 })();`;
 
+const BAVARIUM_SHELL_HTTP_LINK_PATCH = `(function() {
+  if (window.__bavariumShellHttpLinkPatch) return;
+  window.__bavariumShellHttpLinkPatch = true;
+  function isShellPage() {
+    try {
+      if (location.protocol !== "file:") return false;
+      var p = location.pathname.replace(/\\\\/g, "/").toLowerCase();
+      return p.endsWith("/newtab.html") || p.endsWith("/settings.html");
+    } catch (e) {
+      return false;
+    }
+  }
+  document.addEventListener("click", function(e) {
+    if (!isShellPage()) return;
+    var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+    if (!a) return;
+    var href = a.getAttribute("href") || "";
+    if (!href || href.charAt(0) === "#" || href.indexOf("bavarium:") === 0 || href.indexOf("javascript:") === 0) return;
+    var abs;
+    try {
+      abs = new URL(href, location.href).href;
+      var u = new URL(abs);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return;
+    } catch (err) {
+      return;
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    try {
+      require("electron").ipcRenderer.sendToHost("bavarium-open-external-url", abs);
+    } catch (err2) {}
+  }, true);
+})();`;
+
 /** Notify shell when proxied inner frame URL/title changes (same-origin to proxy shell). */
 const BAVARIUM_PAGE_META_WATCHER = `(function() {
   if (window.__bavariumPageMetaWatch) return;
@@ -147,6 +181,9 @@ function injectBavariumLinkClickCapture(view) {
   webviewGuestExecuteJavaScript(view, BAVARIUM_LINK_CLICK_PATCH, true).catch(
     () => {}
   );
+  webviewGuestExecuteJavaScript(view, BAVARIUM_SHELL_HTTP_LINK_PATCH, true).catch(
+    () => {}
+  );
 }
 
 function injectPageMetaWatcher(view) {
@@ -156,12 +193,129 @@ function injectPageMetaWatcher(view) {
   );
 }
 
+function isBavariumShellFilePageUrl(pageUrl) {
+  if (!pageUrl || typeof pageUrl !== "string") return false;
+  try {
+    const u = new URL(pageUrl);
+    if (u.protocol !== "file:") return false;
+    const p = u.pathname.replace(/\\/g, "/").toLowerCase();
+    return p.endsWith("/newtab.html") || p.endsWith("/settings.html");
+  } catch {
+    return false;
+  }
+}
+
+function isHttpOrHttpsUrl(url) {
+  return /^https?:/i.test(String(url || ""));
+}
+
+let externalLinkModalState = null;
+
+function getExternalLinkOpenPreference() {
+  const pref = getSettings().externalLinkOpenPreference;
+  if (pref === "external" || pref === "bavarium") return pref;
+  return "ask";
+}
+
+async function saveExternalLinkOpenPreference(pref) {
+  const disk = await ipcRenderer.invoke("get-settings");
+  const next = { ...disk, externalLinkOpenPreference: pref };
+  ipcRenderer.send("save-settings", next);
+  applySettingsPayload(next);
+}
+
+function openExternalLinkInBavarium(url, sourceView, options = {}) {
+  const background = !!options.background;
+  const incognito = !!options.incognito;
+  if (background) {
+    newTab(url, { background: true, incognito });
+    return;
+  }
+  const te = sourceView ? tabEntryForView(sourceView) : currentTab;
+  if (te && te.view) {
+    const prev = currentTab;
+    currentTab = te;
+    navigateCurrentTab(url);
+    if (prev && prev.id !== te.id) switchTab(te.id);
+    return;
+  }
+  newTab(url, { incognito });
+}
+
+function openExternalLinkExternally(url) {
+  shell.openExternal(url).catch(() => {});
+}
+
+function closeExternalLinkModal() {
+  const modal = document.getElementById("externalLinkModal");
+  if (modal) modal.style.display = "none";
+  setShellModalOpen(false);
+  externalLinkModalState = null;
+}
+
+function showExternalLinkModal(url, sourceView, options = {}) {
+  const modal = document.getElementById("externalLinkModal");
+  const urlEl = document.getElementById("externalLinkUrl");
+  const rememberEl = document.getElementById("externalLinkRemember");
+  if (!modal || !urlEl) return;
+  urlEl.textContent = url;
+  if (rememberEl) rememberEl.checked = false;
+  externalLinkModalState = { url, sourceView, options };
+  setShellModalOpen(true);
+  modal.style.display = "flex";
+  const dialog = modal.querySelector(".dialog");
+  if (dialog && !dialog.__bavariumDialogStop) {
+    dialog.__bavariumDialogStop = true;
+    dialog.addEventListener("mousedown", (e) => e.stopPropagation());
+  }
+}
+
+function completeExternalLinkModal(choice) {
+  const state = externalLinkModalState;
+  if (!state) return;
+  const rememberEl = document.getElementById("externalLinkRemember");
+  const remember = !!(rememberEl && rememberEl.checked);
+  closeExternalLinkModal();
+  if (choice === "external") {
+    if (remember) void saveExternalLinkOpenPreference("external");
+    openExternalLinkExternally(state.url);
+    return;
+  }
+  if (choice === "bavarium") {
+    if (remember) void saveExternalLinkOpenPreference("bavarium");
+    openExternalLinkInBavarium(state.url, state.sourceView, state.options);
+  }
+}
+
+function handleShellExternalLink(url, sourceView, options = {}) {
+  const text = String(url || "").trim();
+  if (!text || !isHttpOrHttpsUrl(text)) return;
+  const pref = getExternalLinkOpenPreference();
+  if (pref === "external") {
+    openExternalLinkExternally(text);
+    return;
+  }
+  if (pref === "bavarium") {
+    openExternalLinkInBavarium(text, sourceView, options);
+    return;
+  }
+  showExternalLinkModal(text, sourceView, options);
+}
+
 function attachWebviewBavariumNavigation(view) {
   view.addEventListener("will-navigate", (e) => {
     const url = e.url || "";
     if (url.startsWith("bavarium://")) {
       e.preventDefault();
       handleInternal(url, view);
+      return;
+    }
+    if (
+      isHttpOrHttpsUrl(url) &&
+      isBavariumShellFilePageUrl(webviewDisplayUrl(view))
+    ) {
+      e.preventDefault();
+      handleShellExternalLink(url, view);
     }
   });
 
@@ -186,6 +340,10 @@ function attachWebviewBavariumNavigation(view) {
         navigateCurrentTab(String(e.args[0]));
         if (prev && prev.id !== te.id) switchTab(te.id);
       }
+      return;
+    }
+    if (e.channel === "bavarium-open-external-url" && e.args && e.args[0]) {
+      handleShellExternalLink(String(e.args[0]), view);
       return;
     }
     if (e.channel === "bavarium-page-meta-changed") {
@@ -1135,6 +1293,18 @@ function newTab(url = null, options = {}) {
           if (navUrl.startsWith("bavarium://")) {
             event.preventDefault();
             handleInternal(navUrl, view);
+            return;
+          }
+          let guestPageUrl = "";
+          try {
+            guestPageUrl = wc.getURL();
+          } catch (_) {}
+          if (
+            isHttpOrHttpsUrl(navUrl) &&
+            isBavariumShellFilePageUrl(guestPageUrl)
+          ) {
+            event.preventDefault();
+            handleShellExternalLink(navUrl, view);
           }
         });
       }
@@ -1834,6 +2004,12 @@ function getSettings() {
   if (settings.fpsLimitEnabled === undefined) settings.fpsLimitEnabled = false;
   if (settings.fpsSyncDisplay === undefined) settings.fpsSyncDisplay = true;
   if (settings.fpsLimit === undefined) settings.fpsLimit = 60;
+  if (
+    settings.externalLinkOpenPreference !== "external" &&
+    settings.externalLinkOpenPreference !== "bavarium"
+  ) {
+    settings.externalLinkOpenPreference = "ask";
+  }
 
   return settings;
 }
@@ -2123,6 +2299,17 @@ function saveBookmarksList(list) {
 
 function setShellModalOpen(open) {
   document.body.classList.toggle("shell-modal-open", !!open);
+  document.querySelectorAll("webview.tab-webview.shell-modal-suppressed").forEach((wv) => {
+    wv.classList.remove("shell-modal-suppressed");
+  });
+  const devtoolsHost = document.getElementById("devtoolsHost");
+  if (devtoolsHost) devtoolsHost.classList.remove("shell-modal-suppressed");
+  if (open) {
+    if (currentTab && currentTab.view) {
+      currentTab.view.classList.add("shell-modal-suppressed");
+    }
+    if (devtoolsHost) devtoolsHost.classList.add("shell-modal-suppressed");
+  }
 }
 
 function normalizeBookmarkMatchUrl(url) {
@@ -3242,6 +3429,11 @@ function applySettingsPayload(settings) {
     fpsLimitEnabled: settings.fpsLimitEnabled === true,
     fpsSyncDisplay: settings.fpsSyncDisplay !== false,
     fpsLimit: normalizeFpsLimitSetting(settings.fpsLimit),
+    externalLinkOpenPreference:
+      settings.externalLinkOpenPreference === "external" ||
+      settings.externalLinkOpenPreference === "bavarium"
+        ? settings.externalLinkOpenPreference
+        : "ask",
   };
   localStorage.setItem("settings", JSON.stringify(merged));
   syncDeveloperUiFromSettings(merged);
@@ -3739,6 +3931,12 @@ window.onload = async () => {
     if (m && m.style.display === "flex") {
       e.preventDefault();
       closeBookmarkEditor();
+      return;
+    }
+    const ext = document.getElementById("externalLinkModal");
+    if (ext && ext.style.display === "flex") {
+      e.preventDefault();
+      closeExternalLinkModal();
     }
   });
 
@@ -3858,6 +4056,37 @@ window.onload = async () => {
     if (!url) return;
     newTab(url, { background, incognito });
   });
+
+  ipcRenderer.on("bavarium-shell-external-link", (_e, payload) => {
+    const url =
+      payload && typeof payload === "object" && typeof payload.url === "string"
+        ? payload.url
+        : "";
+    if (!url) return;
+    handleShellExternalLink(url, currentTab && currentTab.view, {
+      background: !!(payload && payload.background),
+      incognito: !!(payload && payload.incognito),
+    });
+  });
+
+  const externalLinkModal = document.getElementById("externalLinkModal");
+  const externalLinkOpenExternal = document.getElementById("externalLinkOpenExternal");
+  const externalLinkOpenBavarium = document.getElementById("externalLinkOpenBavarium");
+  if (externalLinkOpenExternal) {
+    externalLinkOpenExternal.addEventListener("click", () => {
+      completeExternalLinkModal("external");
+    });
+  }
+  if (externalLinkOpenBavarium) {
+    externalLinkOpenBavarium.addEventListener("click", () => {
+      completeExternalLinkModal("bavarium");
+    });
+  }
+  if (externalLinkModal) {
+    externalLinkModal.addEventListener("click", (e) => {
+      if (e.target === externalLinkModal) closeExternalLinkModal();
+    });
+  }
 
   document.addEventListener("keydown", (e) => {
   const isMac = navigator.platform.toUpperCase().includes("MAC");
