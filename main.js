@@ -97,6 +97,8 @@ const path = require('path');
 const { spawn, execFile, execFileSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
+const { createSafeBrowsingService } = require('./safe-browsing');
+const { clearGoogleSafeBrowsingCache } = require('./google-safe-browsing');
 
 const HISTORY_LIMIT = 500;
 const DOWNLOAD_RECORD_LIMIT = 200;
@@ -1248,6 +1250,20 @@ function normalizeExternalLinkOpenPreference(raw) {
   return 'ask';
 }
 
+function normalizeSafeBrowsingProvider(raw) {
+  if (raw === 'google' || raw === 'local' || raw === 'both') return raw;
+  return 'both';
+}
+
+function safeBrowsingOptionsFromSettings(settings) {
+  const s = settings || mergedSettingsFromDisk();
+  return {
+    enabled: s.safeBrowsingEnabled !== false,
+    provider: normalizeSafeBrowsingProvider(s.safeBrowsingProvider),
+    googleApiKey: String(s.safeBrowsingApiKey || '').trim(),
+  };
+}
+
 function isBavariumShellFilePageUrl(pageUrl) {
   if (!pageUrl || typeof pageUrl !== 'string') return false;
   try {
@@ -1258,6 +1274,50 @@ function isBavariumShellFilePageUrl(pageUrl) {
   } catch {
     return false;
   }
+}
+
+function isUnsafeWarningPageUrl(pageUrl) {
+  if (!pageUrl || typeof pageUrl !== 'string') return false;
+  try {
+    const u = new URL(pageUrl);
+    if (u.protocol !== 'file:') return false;
+    const p = u.pathname.replace(/\\/g, '/').toLowerCase();
+    return p.endsWith('/unsafe-warning.html');
+  } catch {
+    return false;
+  }
+}
+
+let safeBrowsingService = null;
+
+function getSafeBrowsingService() {
+  if (!safeBrowsingService) {
+    safeBrowsingService = createSafeBrowsingService({
+      userDataPath: app.getPath('userData'),
+    });
+  }
+  return safeBrowsingService;
+}
+
+function resolveRemoteUrlForSafeBrowsing(url) {
+  const fromSj = decodeScramjetTunnelUrlMenu(url);
+  if (fromSj) return fromSj;
+  const fromShell = proxyShellTargetFromUrl(url);
+  if (fromShell) {
+    const remote = coerceRemoteHttpUrl(fromShell);
+    if (remote) return remote;
+  }
+  return coerceRemoteHttpUrl(url);
+}
+
+async function checkSafeBrowsingForNavigation(url) {
+  const sbOpts = safeBrowsingOptionsFromSettings();
+  if (!sbOpts.enabled) return null;
+  const remote = resolveRemoteUrlForSafeBrowsing(url);
+  if (!remote || !isHttpUrl(remote)) return null;
+  const result = await getSafeBrowsingService().checkUrl(remote, sbOpts);
+  if (!result.blocked) return null;
+  return { ...result, url: remote };
 }
 
 function mergedSettingsFromDisk() {
@@ -1272,6 +1332,9 @@ function mergedSettingsFromDisk() {
     scramjetPort: s.scramjetPort || '3000',
     homepage: normalizeHomepageFromDisk(s.homepage),
     historyEnabled: s.historyEnabled !== false,
+    safeBrowsingEnabled: s.safeBrowsingEnabled !== false,
+    safeBrowsingProvider: normalizeSafeBrowsingProvider(s.safeBrowsingProvider),
+    safeBrowsingApiKey: String(s.safeBrowsingApiKey || '').trim(),
     askBeforeDownload: s.askBeforeDownload !== false,
     downloadPath: s.downloadPath || '',
     trackPreReleaseUpdates: s.trackPreReleaseUpdates === true,
@@ -2300,6 +2363,7 @@ function registerGuestWebviewContextMenu() {
         try {
           guestPageUrl = wc.getURL();
         } catch (_) {}
+        if (isUnsafeWarningPageUrl(guestPageUrl)) return;
         if (isBavariumShellFilePageUrl(guestPageUrl)) {
           event.preventDefault();
           const host = wc.hostWebContents;
@@ -2309,7 +2373,22 @@ function registerGuestWebviewContextMenu() {
               incognito: guestWebviewIsIncognito(wc),
             });
           }
+          return;
         }
+        event.preventDefault();
+        void (async () => {
+          const unsafeHit = await checkSafeBrowsingForNavigation(url);
+          if (unsafeHit) {
+            const host = wc.hostWebContents;
+            if (host && !host.isDestroyed()) {
+              host.send('bavarium-unsafe-site-blocked', unsafeHit);
+            }
+            return;
+          }
+          try {
+            if (!wc.isDestroyed()) wc.loadURL(url);
+          } catch (_) {}
+        })();
         return;
       }
       event.preventDefault();
@@ -2348,19 +2427,31 @@ function registerGuestWebviewContextMenu() {
         try {
           guestPageUrl = wc.getURL();
         } catch (_) {}
-        if (isBavariumShellFilePageUrl(guestPageUrl)) {
-          host.send('bavarium-shell-external-link', {
-            url: openUrl,
-            background,
-            incognito: guestWebviewIsIncognito(wc),
-          });
-        } else {
+        void (async () => {
+          const unsafeHit = await checkSafeBrowsingForNavigation(openUrl);
+          if (unsafeHit) {
+            host.send('bavarium-unsafe-site-blocked', {
+              ...unsafeHit,
+              openInNewTab: true,
+              background,
+              incognito: guestWebviewIsIncognito(wc),
+            });
+            return;
+          }
+          if (isBavariumShellFilePageUrl(guestPageUrl)) {
+            host.send('bavarium-shell-external-link', {
+              url: openUrl,
+              background,
+              incognito: guestWebviewIsIncognito(wc),
+            });
+            return;
+          }
           host.send('bavarium-new-tab-with-url', {
             url: openUrl,
             background,
             incognito: guestWebviewIsIncognito(wc),
           });
-        }
+        })();
       }
       return { action: 'deny' };
     });
@@ -3620,6 +3711,15 @@ function scheduleStartupUpdateCheck() {
 // Save settings
 ipcMain.on('save-settings', (event, settings) => {
   const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+  let prevKey = '';
+  try {
+    if (fs.existsSync(settingsPath)) {
+      const prev = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      prevKey = String(prev.safeBrowsingApiKey || '').trim();
+    }
+  } catch (_) {}
+  const nextKey = String(settings.safeBrowsingApiKey || '').trim();
+  if (prevKey !== nextKey) clearGoogleSafeBrowsingCache();
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
   if (settings && settings.proxyEnabled === false) {
     stopProxy();
@@ -3630,6 +3730,29 @@ ipcMain.on('save-settings', (event, settings) => {
 });
 
 ipcMain.handle('get-settings', () => mergedSettingsFromDisk());
+
+ipcMain.handle('safe-browsing-check-url', async (_event, url) => {
+  const hit = await checkSafeBrowsingForNavigation(url);
+  return hit || { blocked: false };
+});
+
+ipcMain.handle('safe-browsing-allow-host', (_event, url) => {
+  getSafeBrowsingService().allowHostForSession(url);
+  return { ok: true };
+});
+
+ipcMain.handle('safe-browsing-get-status', () => {
+  const s = mergedSettingsFromDisk();
+  return getSafeBrowsingService().getStatus({
+    provider: s.safeBrowsingProvider,
+    googleApiKey: s.safeBrowsingApiKey,
+  });
+});
+
+ipcMain.handle('safe-browsing-refresh-list', async () => {
+  const status = await getSafeBrowsingService().refreshBlocklist(true);
+  return status;
+});
 
 ipcMain.handle('get-display-refresh-rate', () => ({
   hz: getDisplayRefreshRate(),
@@ -4424,6 +4547,7 @@ if (gotTheLock) {
     setupNetworkPerfCounters(session.fromPartition(BAVARIUM_WEB_PARTITION));
     setInterval(tickNetPerfRates, 1000);
     setupDownloadSession();
+    getSafeBrowsingService();
     void startSelectedProxy();
     // Never block the UI on the proxy binding: in packaged builds the child can fail
     // (path, quarantine, port) and waitForPort would retry forever with no window shown.

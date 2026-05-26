@@ -228,18 +228,46 @@ function openExternalLinkInBavarium(url, sourceView, options = {}) {
   const background = !!options.background;
   const incognito = !!options.incognito;
   if (background) {
-    newTab(url, { background: true, incognito });
+    void (async () => {
+      const settings = getSettings();
+      if (settings.safeBrowsingEnabled !== false) {
+        try {
+          const check = await ipcRenderer.invoke("safe-browsing-check-url", url);
+          if (check && check.blocked) {
+            const te = newTab(null, { background: true, incognito });
+            showUnsafeSiteWarning(te, url, check);
+            return;
+          }
+        } catch (_) {}
+      }
+      const te = newTab(null, { background: true, incognito });
+      performNavigateToDestination(te, url, settings);
+    })();
     return;
   }
   const te = sourceView ? tabEntryForView(sourceView) : currentTab;
   if (te && te.view) {
     const prev = currentTab;
     currentTab = te;
-    navigateCurrentTab(url);
+    void navigateCurrentTab(url);
     if (prev && prev.id !== te.id) switchTab(te.id);
     return;
   }
-  newTab(url, { incognito });
+  void (async () => {
+    const settings = getSettings();
+    if (settings.safeBrowsingEnabled !== false) {
+      try {
+        const check = await ipcRenderer.invoke("safe-browsing-check-url", url);
+        if (check && check.blocked) {
+          const tab = newTab(null, { incognito });
+          showUnsafeSiteWarning(tab, url, check);
+          return;
+        }
+      } catch (_) {}
+    }
+    const tab = newTab(null, { incognito });
+    performNavigateToDestination(tab, url, settings);
+  })();
 }
 
 function openExternalLinkExternally(url) {
@@ -310,6 +338,7 @@ function attachWebviewBavariumNavigation(view) {
       handleInternal(url, view);
       return;
     }
+    if (isUnsafeWarningPageUrl(url)) return;
     if (
       isHttpOrHttpsUrl(url) &&
       isBavariumShellFilePageUrl(webviewDisplayUrl(view))
@@ -337,8 +366,37 @@ function attachWebviewBavariumNavigation(view) {
       if (te) {
         const prev = currentTab;
         currentTab = te;
-        navigateCurrentTab(String(e.args[0]));
+        void navigateCurrentTab(String(e.args[0]));
         if (prev && prev.id !== te.id) switchTab(te.id);
+      }
+      return;
+    }
+    if (e.channel === "bavarium-unsafe-warning-back") {
+      const te = tabEntryForView(view);
+      if (!te || !te.view) return;
+      const home = new URL("newtab.html", window.location.href).href;
+      try {
+        if (te.view.canGoBack && te.view.canGoBack()) {
+          te.view.goBack();
+        } else {
+          forceWebviewNavigation(te.view, home);
+        }
+      } catch (_) {
+        forceWebviewNavigation(te.view, home);
+      }
+      return;
+    }
+    if (e.channel === "bavarium-unsafe-warning-proceed" && e.args && e.args[0]) {
+      const te = tabEntryForView(view);
+      const url = String(e.args[0]);
+      void ipcRenderer.invoke("safe-browsing-allow-host", url);
+      if (te) {
+        const prev = currentTab;
+        currentTab = te;
+        void navigateCurrentTab(url, { bypassSafeBrowsing: true });
+        if (prev && prev.id !== te.id) switchTab(te.id);
+      } else {
+        void navigateCurrentTab(url, { bypassSafeBrowsing: true });
       }
       return;
     }
@@ -496,26 +554,34 @@ function tabDisplayUrlForOmnibox(te) {
   }
 }
 
+const SITE_INFO_ICONS = {
+  shield: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 4 5v6c0 5.25 3.5 10.15 8 11.35 4.5-1.2 8-6.1 8-11.35V5L12 2z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg>`,
+  verified: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.75"/><path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  proxy: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.75"/><path d="M2 12h20" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M12 3c4 2.5 4 15.5 0 18" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M12 3c-4 2.5-4 15.5 0 18" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>`,
+  file: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M3 9h18" stroke="currentColor" stroke-width="1.75"/></svg>`,
+  bavarium: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="12" cy="5" rx="8" ry="3" stroke="currentColor" stroke-width="1.75"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" stroke="currentColor" stroke-width="1.75"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" stroke="currentColor" stroke-width="1.75"/></svg>`,
+};
+
 const SITE_INFO_KINDS = {
   file: {
     label: "Local file",
-    message: "This is a file on your device.",
-    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M3 9h18" stroke="currentColor" stroke-width="1.75"/></svg>`,
+    icon: SITE_INFO_ICONS.file,
   },
   bavarium: {
     label: "Bavarium page",
-    message: "This is a Bavarium page.",
-    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="12" cy="5" rx="8" ry="3" stroke="currentColor" stroke-width="1.75"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" stroke="currentColor" stroke-width="1.75"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" stroke="currentColor" stroke-width="1.75"/></svg>`,
+    icon: SITE_INFO_ICONS.bavarium,
   },
   reblock: {
     label: "Official ReBlock website",
-    message: "This is an official ReBlock website.",
-    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.75"/><path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    icon: SITE_INFO_ICONS.verified,
   },
   https: {
     label: "Secure connection",
-    message: "Your connection to this site is secure and encrypted with HTTPS.",
-    icon: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 4 5v6c0 5.25 3.5 10.15 8 11.35 4.5-1.2 8-6.1 8-11.35V5L12 2z" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg>`,
+    icon: SITE_INFO_ICONS.shield,
+  },
+  insecure: {
+    label: "Connection is not secure",
+    icon: SITE_INFO_ICONS.shield,
   },
 };
 
@@ -547,8 +613,132 @@ function classifySiteInfoKind(url) {
     const u = new URL(href);
     if (isOfficialReblockSiteUrl(u.href)) return "reblock";
     if (u.protocol === "https:") return "https";
+    if (u.protocol === "http:") return "insecure";
   } catch (_) {}
   return null;
+}
+
+function resolveSiteInfoHref(url) {
+  if (!url || typeof url !== "string") return null;
+  const raw = url.trim();
+  if (!raw) return null;
+  if (raw.startsWith("file://") || raw.startsWith("bavarium://")) return raw;
+  let href = raw;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+    href = `https://${href}`;
+  }
+  try {
+    return new URL(href).href;
+  } catch (_) {
+    return null;
+  }
+}
+
+function getActiveProxyDisplayName() {
+  const s = getSettings();
+  if (s.proxyEnabled === false) return null;
+  if (s.proxyType === "scramjet") return "Scramjet";
+  return "Ultraviolet";
+}
+
+function shouldShowProxySiteInfoForUrl(url) {
+  const href = resolveSiteInfoHref(url);
+  if (!href) return false;
+  if (href.startsWith("file://") || href.startsWith("bavarium://")) return false;
+  try {
+    const u = new URL(href);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  } catch (_) {
+    return false;
+  }
+  return !!getActiveProxyDisplayName();
+}
+
+function appendSiteInfoSection(container, className, iconSvg, title, description) {
+  const section = document.createElement("div");
+  section.className = `site-info-section ${className}`;
+  const icon = document.createElement("div");
+  icon.className = "site-info-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML = iconSvg;
+  const copy = document.createElement("div");
+  copy.className = "site-info-copy";
+  const titleEl = document.createElement("p");
+  titleEl.className = "site-info-title";
+  titleEl.textContent = title;
+  const descEl = document.createElement("p");
+  descEl.className = "site-info-desc";
+  descEl.textContent = description;
+  copy.appendChild(titleEl);
+  copy.appendChild(descEl);
+  section.appendChild(icon);
+  section.appendChild(copy);
+  container.appendChild(section);
+}
+
+function renderSiteInfoPopover(te, kind) {
+  const content = document.getElementById("siteInfoPopoverContent");
+  if (!content) return;
+  content.replaceChildren();
+
+  const displayUrl = te ? tabDisplayUrlForOmnibox(te) : "";
+  const href = resolveSiteInfoHref(displayUrl);
+  const official = href ? isOfficialReblockSiteUrl(href) : false;
+  const proxyName = getActiveProxyDisplayName();
+
+  if (official) {
+    appendSiteInfoSection(
+      content,
+      "site-info-affiliated",
+      SITE_INFO_ICONS.verified,
+      "Affiliated site",
+      "This website is an official ReBlock site and has been optimized for use with Bavarium!"
+    );
+  }
+
+  if (kind === "https" || kind === "reblock") {
+    appendSiteInfoSection(
+      content,
+      "site-info-secure",
+      SITE_INFO_ICONS.shield,
+      "This site is secure",
+      "Your connection to this site is secure and encrypted with HTTPS."
+    );
+  } else if (kind === "insecure") {
+    appendSiteInfoSection(
+      content,
+      "site-info-insecure",
+      SITE_INFO_ICONS.shield,
+      "Connection is not secure",
+      "Your connection is not secure and you are at risk. It is recommended you leave this site to avoid your data being at risk."
+    );
+  } else if (kind === "file") {
+    appendSiteInfoSection(
+      content,
+      "site-info-internal",
+      SITE_INFO_ICONS.file,
+      "Local file",
+      "This page is a file stored on your device."
+    );
+  } else if (kind === "bavarium") {
+    appendSiteInfoSection(
+      content,
+      "site-info-internal",
+      SITE_INFO_ICONS.bavarium,
+      "Bavarium page",
+      "This is an internal Bavarium page."
+    );
+  }
+
+  if (shouldShowProxySiteInfoForUrl(displayUrl) && proxyName) {
+    appendSiteInfoSection(
+      content,
+      "site-info-proxy",
+      SITE_INFO_ICONS.proxy,
+      "Connected via proxy",
+      `Active connection to the site is being made through ${proxyName}.`
+    );
+  }
 }
 
 let siteInfoPopoverOpen = false;
@@ -566,8 +756,8 @@ function updateSiteInfoIndicatorForTab(te) {
   const anchor = document.getElementById("siteInfoAnchor");
   const btn = document.getElementById("btnSiteInfo");
   const iconEl = document.getElementById("siteInfoIcon");
-  const textEl = document.getElementById("siteInfoPopoverText");
-  if (!anchor || !btn || !iconEl || !textEl) return;
+  const contentEl = document.getElementById("siteInfoPopoverContent");
+  if (!anchor || !btn || !iconEl || !contentEl) return;
 
   const active =
     te && currentTab && currentTab.id === te.id && !urlOmniboxUserEditing;
@@ -587,7 +777,7 @@ function updateSiteInfoIndicatorForTab(te) {
   btn.title = info.label;
   btn.setAttribute("aria-label", info.label);
   iconEl.innerHTML = info.icon;
-  textEl.textContent = info.message;
+  renderSiteInfoPopover(te, kind);
 
   if (currentSiteInfoKind !== kind) {
     currentSiteInfoKind = kind;
@@ -2004,6 +2194,15 @@ function getSettings() {
   if (settings.fpsLimitEnabled === undefined) settings.fpsLimitEnabled = false;
   if (settings.fpsSyncDisplay === undefined) settings.fpsSyncDisplay = true;
   if (settings.fpsLimit === undefined) settings.fpsLimit = 60;
+  if (settings.safeBrowsingEnabled === undefined) settings.safeBrowsingEnabled = true;
+  if (
+    settings.safeBrowsingProvider !== "google" &&
+    settings.safeBrowsingProvider !== "local" &&
+    settings.safeBrowsingProvider !== "both"
+  ) {
+    settings.safeBrowsingProvider = "both";
+  }
+  if (settings.safeBrowsingApiKey === undefined) settings.safeBrowsingApiKey = "";
   if (
     settings.externalLinkOpenPreference !== "external" &&
     settings.externalLinkOpenPreference !== "bavarium"
@@ -2136,30 +2335,36 @@ function resolveOmniboxInput(raw) {
 
 function go() {
   const input = document.getElementById("url").value.trim();
-  navigateCurrentTab(input);
+  void navigateCurrentTab(input);
 }
 
-function navigateCurrentTab(rawInput) {
-  const input = String(rawInput || "").trim();
-  if (!input) return;
-
-  const settings = getSettings();
-  const searchEngine = settings.searchEngine || "google";
-
-  const resolved = resolveOmniboxInput(input);
-  if (!resolved) return;
-
-  if (resolved.kind === "internal") {
-    handleInternal(resolved.url);
-    return;
+function isUnsafeWarningPageUrl(pageUrl) {
+  if (!pageUrl || typeof pageUrl !== "string") return false;
+  try {
+    const u = new URL(pageUrl);
+    if (u.protocol !== "file:") return false;
+    const p = u.pathname.replace(/\\/g, "/").toLowerCase();
+    return p.endsWith("/unsafe-warning.html");
+  } catch {
+    return false;
   }
+}
 
-  const destination =
-    resolved.kind === "url"
-      ? resolved.url
-      : searchUrlForQuery(resolved.query, searchEngine);
+function showUnsafeSiteWarning(te, destination, check) {
+  if (!te || !te.view) return;
+  const warn = new URL("unsafe-warning.html", window.location.href);
+  warn.searchParams.set("target", destination);
+  warn.searchParams.set("host", (check && check.host) || "");
+  if (check && check.providerLabel) {
+    warn.searchParams.set("provider", check.providerLabel);
+  }
+  if (check && check.threatType) {
+    warn.searchParams.set("reason", check.threatType);
+  }
+  forceWebviewNavigation(te.view, warn.href);
+}
 
-  const te = currentTab;
+function performNavigateToDestination(te, destination, settings) {
   if (te) primeTabGuestPageFromDestination(te, destination);
 
   const url = wrapUrlForProxyIfNeeded(destination, settings);
@@ -2176,6 +2381,42 @@ function navigateCurrentTab(rawInput) {
     }
     scheduleGuestTabPageMetaRefresh(te.view);
   }
+}
+
+async function navigateCurrentTab(rawInput, options = {}) {
+  const input = String(rawInput || "").trim();
+  if (!input) return;
+
+  const settings = getSettings();
+  const searchEngine = settings.searchEngine || "google";
+  const bypassSafeBrowsing = options.bypassSafeBrowsing === true;
+
+  const resolved = resolveOmniboxInput(input);
+  if (!resolved) return;
+
+  if (resolved.kind === "internal") {
+    handleInternal(resolved.url);
+    return;
+  }
+
+  const destination =
+    resolved.kind === "url"
+      ? resolved.url
+      : searchUrlForQuery(resolved.query, searchEngine);
+
+  const te = currentTab;
+
+  if (!bypassSafeBrowsing && settings.safeBrowsingEnabled !== false) {
+    try {
+      const check = await ipcRenderer.invoke("safe-browsing-check-url", destination);
+      if (check && check.blocked) {
+        if (te) showUnsafeSiteWarning(te, destination, check);
+        return;
+      }
+    } catch (_) {}
+  }
+
+  performNavigateToDestination(te, destination, settings);
 }
 
 const BOOKMARKS_KEY = "bavarium-bookmarks";
@@ -3429,6 +3670,13 @@ function applySettingsPayload(settings) {
     fpsLimitEnabled: settings.fpsLimitEnabled === true,
     fpsSyncDisplay: settings.fpsSyncDisplay !== false,
     fpsLimit: normalizeFpsLimitSetting(settings.fpsLimit),
+    safeBrowsingEnabled: settings.safeBrowsingEnabled !== false,
+    safeBrowsingProvider:
+      settings.safeBrowsingProvider === "google" ||
+      settings.safeBrowsingProvider === "local"
+        ? settings.safeBrowsingProvider
+        : "both",
+    safeBrowsingApiKey: settings.safeBrowsingApiKey || "",
     externalLinkOpenPreference:
       settings.externalLinkOpenPreference === "external" ||
       settings.externalLinkOpenPreference === "bavarium"
@@ -3848,6 +4096,9 @@ window.onload = async () => {
         closeSiteInfoPopover();
         return;
       }
+      if (currentTab && currentSiteInfoKind) {
+        renderSiteInfoPopover(currentTab, currentSiteInfoKind);
+      }
       closeZoomPopover();
       closeDownloadsShelf();
       pop.classList.add("open");
@@ -4054,7 +4305,34 @@ window.onload = async () => {
       incognito = !!payload.incognito;
     }
     if (!url) return;
-    newTab(url, { background, incognito });
+    void (async () => {
+      const settings = getSettings();
+      if (settings.safeBrowsingEnabled !== false) {
+        try {
+          const check = await ipcRenderer.invoke("safe-browsing-check-url", url);
+          if (check && check.blocked) {
+            const te = newTab(null, { background, incognito });
+            showUnsafeSiteWarning(te, url, check);
+            return;
+          }
+        } catch (_) {}
+      }
+      const te = newTab(null, { background, incognito });
+      performNavigateToDestination(te, url, settings);
+    })();
+  });
+
+  ipcRenderer.on("bavarium-unsafe-site-blocked", (_e, payload) => {
+    const url = payload && payload.url;
+    if (!url) return;
+    let te = currentTab;
+    if (payload && payload.openInNewTab) {
+      te = newTab(null, {
+        background: !!payload.background,
+        incognito: !!payload.incognito,
+      });
+    }
+    if (te) showUnsafeSiteWarning(te, url, payload);
   });
 
   ipcRenderer.on("bavarium-shell-external-link", (_e, payload) => {
@@ -4262,6 +4540,7 @@ window.onload = async () => {
     applySettingsPayload(settings || undefined);
     if (currentTab) {
       refreshStaleProxyTabIfNeeded(currentTab);
+      updateSiteInfoIndicatorForTab(currentTab);
     }
     document.querySelectorAll("webview").forEach((wv) => {
       const src = wv.getAttribute("src") || "";

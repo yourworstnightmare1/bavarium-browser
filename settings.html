@@ -778,6 +778,55 @@
         </label>
       </div>
 
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="safeBrowsingEnabled" />
+          Safe Browsing warnings
+        </label>
+        <p class="field-hint">
+          Warns before visiting sites flagged as phishing, malware, or other threats.
+          You can still proceed from the warning page if you choose.
+        </p>
+      </div>
+
+      <div class="field">
+        <label for="safeBrowsingProvider">Threat check source</label>
+        <select id="safeBrowsingProvider">
+          <option value="both">Google Safe Browsing + local blocklist</option>
+          <option value="google">Google Safe Browsing only</option>
+          <option value="local">Local blocklist only (CERT.PL + community)</option>
+        </select>
+        <p class="field-hint">
+          <a href="https://developers.google.com/safe-browsing" target="_blank" rel="noopener noreferrer">Google Safe Browsing</a>
+          is for non-commercial use and requires a free API key from Google Cloud.
+          The local list uses
+          <a href="https://cert.pl/en/warning-list/" target="_blank" rel="noopener noreferrer">CERT Polska’s Warning List</a>
+          plus a community phishing feed (updated daily).
+        </p>
+      </div>
+
+      <div class="field">
+        <label for="safeBrowsingApiKey">Google Safe Browsing API key</label>
+        <input
+          type="password"
+          id="safeBrowsingApiKey"
+          placeholder="Optional — from Google Cloud Console"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <p class="field-hint">
+          Enable the Safe Browsing API for your project, then paste the key here.
+          Leave blank to use only the local blocklist.
+        </p>
+      </div>
+
+      <div class="field">
+        <p class="field-hint" id="safeBrowsingStatus"></p>
+        <div class="row" style="margin-top:8px;">
+          <button type="button" class="btn secondary" id="refreshSafeBrowsingBtn">Update local blocklist now</button>
+        </div>
+      </div>
+
       <div class="field row">
         <button type="button" class="btn secondary" id="clearHistoryBtn">Clear all history</button>
       </div>

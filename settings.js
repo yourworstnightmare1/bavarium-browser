@@ -253,6 +253,9 @@ function installAutoApplySettings() {
     "wssServer",
     "proxyEnabled",
     "historyEnabled",
+    "safeBrowsingEnabled",
+    "safeBrowsingProvider",
+    "safeBrowsingApiKey",
     "askBeforeDownload",
     "trackPreReleaseUpdates",
     "enableChromiumDevTools",
@@ -264,6 +267,12 @@ function installAutoApplySettings() {
     if (!el) return;
     el.addEventListener("change", schedule);
   });
+
+  const safeBrowsingApiKeyEl = document.getElementById("safeBrowsingApiKey");
+  if (safeBrowsingApiKeyEl) {
+    safeBrowsingApiKeyEl.addEventListener("change", scheduleDebounced);
+    safeBrowsingApiKeyEl.addEventListener("input", scheduleDebounced);
+  }
 
   ["uvPort", "scramjetPort", "fpsLimit"].forEach((id) => {
     const el = document.getElementById(id);
@@ -608,6 +617,17 @@ function applySettingsToForm() {
   if (seH) seH.value = s.searchEngine || "google";
   syncIconSelectFromHidden(document.getElementById("searchEngineIconSelect"));
   document.getElementById("historyEnabled").checked = s.historyEnabled !== false;
+  const safeBrowsing = document.getElementById("safeBrowsingEnabled");
+  if (safeBrowsing) safeBrowsing.checked = s.safeBrowsingEnabled !== false;
+  const safeBrowsingProvider = document.getElementById("safeBrowsingProvider");
+  if (safeBrowsingProvider) {
+    const p = s.safeBrowsingProvider;
+    safeBrowsingProvider.value =
+      p === "google" || p === "local" || p === "both" ? p : "both";
+  }
+  const safeBrowsingApiKey = document.getElementById("safeBrowsingApiKey");
+  if (safeBrowsingApiKey) safeBrowsingApiKey.value = s.safeBrowsingApiKey || "";
+  void refreshSafeBrowsingStatusUi();
   document.getElementById("askBeforeDownload").checked =
     s.askBeforeDownload !== false;
   const trackPre = document.getElementById("trackPreReleaseUpdates");
@@ -644,6 +664,11 @@ function collectSettingsFromForm() {
     scramjetPort: document.getElementById("scramjetPort").value,
     homepage: document.getElementById("homepage").value.trim() || "bavarium",
     historyEnabled: document.getElementById("historyEnabled").checked,
+    safeBrowsingEnabled: !!document.getElementById("safeBrowsingEnabled")?.checked,
+    safeBrowsingProvider:
+      document.getElementById("safeBrowsingProvider")?.value || "both",
+    safeBrowsingApiKey:
+      document.getElementById("safeBrowsingApiKey")?.value.trim() || "",
     askBeforeDownload: document.getElementById("askBeforeDownload").checked,
     downloadPath: currentSettings.downloadPath || "",
     trackPreReleaseUpdates: !!document.getElementById("trackPreReleaseUpdates")?.checked,
@@ -673,6 +698,40 @@ function clampFpsLimitInput() {
   const clamped = clampFpsLimitValue(el.value);
   if (String(clamped) !== el.value) {
     el.value = String(clamped);
+  }
+}
+
+async function refreshSafeBrowsingStatusUi() {
+  const el = document.getElementById("safeBrowsingStatus");
+  if (!el) return;
+  try {
+    const status = await ipcRenderer.invoke("safe-browsing-get-status");
+    const parts = [];
+    if (status && status.googleConfigured) {
+      parts.push("Google Safe Browsing: API key configured.");
+    } else if (
+      document.getElementById("safeBrowsingProvider")?.value === "google"
+    ) {
+      parts.push("Google Safe Browsing: add an API key to enable checks.");
+    }
+    if (status && status.hostCount) {
+      const when = status.updatedAt
+        ? new Date(status.updatedAt).toLocaleString()
+        : "seed file";
+      parts.push(
+        `Local blocklist: ${Number(status.hostCount).toLocaleString()} domains (${status.source || "unknown"}, updated ${when}).`
+      );
+    } else {
+      parts.push(
+        "Local blocklist: not loaded yet — use “Update local blocklist now” or wait for startup sync."
+      );
+    }
+    if (status && status.lastError) {
+      parts.push(`Last local refresh issue: ${status.lastError}`);
+    }
+    el.textContent = parts.join(" ");
+  } catch (_) {
+    el.textContent = "Safe Browsing status unavailable.";
   }
 }
 
@@ -1181,6 +1240,19 @@ window.addEventListener("DOMContentLoaded", async () => {
     await ipcRenderer.invoke("clear-browsing-history");
     await renderHistory();
   });
+
+  const refreshSafeBrowsingBtn = document.getElementById("refreshSafeBrowsingBtn");
+  if (refreshSafeBrowsingBtn) {
+    refreshSafeBrowsingBtn.addEventListener("click", async () => {
+      refreshSafeBrowsingBtn.disabled = true;
+      try {
+        await ipcRenderer.invoke("safe-browsing-refresh-list");
+        await refreshSafeBrowsingStatusUi();
+      } finally {
+        refreshSafeBrowsingBtn.disabled = false;
+      }
+    });
+  }
 
   const sitePermAddBtn = document.getElementById("sitePermAddBtn");
   const sitePermAddOrigin = document.getElementById("sitePermAddOrigin");

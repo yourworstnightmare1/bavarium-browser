@@ -168,6 +168,15 @@
     #btnSiteInfo.kind-reblock:focus-visible {
       box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.35);
     }
+    #btnSiteInfo.kind-insecure {
+      color: #d93025;
+    }
+    #btnSiteInfo.kind-insecure:hover {
+      background: rgba(217, 48, 37, 0.12);
+    }
+    #btnSiteInfo.kind-insecure:focus-visible {
+      box-shadow: 0 0 0 2px rgba(217, 48, 37, 0.35);
+    }
     #siteInfoIcon svg {
       display: block;
       width: 18px;
@@ -179,7 +188,7 @@
       top: calc(100% + 6px);
       left: 0;
       z-index: 1100;
-      width: min(300px, calc(100vw - 24px));
+      width: min(340px, calc(100vw - 24px));
       padding: 12px 14px;
       background: #fff;
       color: #202124;
@@ -192,8 +201,67 @@
     #siteInfoPopover.open {
       display: block;
     }
-    #siteInfoPopover p {
+    #siteInfoPopoverContent {
+      display: flex;
+      flex-direction: column;
+    }
+    .site-info-section {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 10px 0;
+    }
+    .site-info-section:first-child {
+      padding-top: 0;
+    }
+    .site-info-section:last-child {
+      padding-bottom: 0;
+    }
+    .site-info-section + .site-info-section {
+      border-top: 1px solid #e8eaed;
+    }
+    .site-info-icon {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      margin-top: 1px;
+      color: #5f6368;
+    }
+    .site-info-icon svg {
+      display: block;
+      width: 24px;
+      height: 24px;
+    }
+    .site-info-copy {
+      flex: 1;
+      min-width: 0;
+    }
+    .site-info-title {
+      margin: 0 0 4px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #202124;
+    }
+    .site-info-desc {
       margin: 0;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #5f6368;
+    }
+    .site-info-section.site-info-affiliated .site-info-icon {
+      color: #1a73e8;
+    }
+    .site-info-section.site-info-secure .site-info-icon {
+      color: #188038;
+    }
+    .site-info-section.site-info-insecure .site-info-icon {
+      color: #d93025;
+    }
+    .site-info-section.site-info-proxy .site-info-icon {
+      color: #5f6368;
+    }
+    .site-info-section.site-info-internal .site-info-icon {
+      color: #5c6bc0;
     }
     #url {
       flex: 1;
@@ -572,11 +640,41 @@
       #btnSiteInfo.kind-reblock:hover {
         background: rgba(138, 180, 248, 0.14);
       }
+      #btnSiteInfo.kind-insecure {
+        color: #f28b82;
+      }
+      #btnSiteInfo.kind-insecure:hover {
+        background: rgba(242, 139, 130, 0.16);
+      }
       #siteInfoPopover {
         background: #292a2d;
         color: #e8eaed;
         border-color: #3c4043;
         box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      }
+      .site-info-section + .site-info-section {
+        border-top-color: #3c4043;
+      }
+      .site-info-title {
+        color: #e8eaed;
+      }
+      .site-info-desc {
+        color: #9aa0a6;
+      }
+      .site-info-section.site-info-affiliated .site-info-icon {
+        color: #8ab4f8;
+      }
+      .site-info-section.site-info-secure .site-info-icon {
+        color: #81c995;
+      }
+      .site-info-section.site-info-insecure .site-info-icon {
+        color: #f28b82;
+      }
+      .site-info-section.site-info-proxy .site-info-icon {
+        color: #9aa0a6;
+      }
+      .site-info-section.site-info-internal .site-info-icon {
+        color: #9fa8da;
       }
       .downloads-toolbar-icon,
       .downloads-shelf-icon {
@@ -1101,7 +1199,7 @@
         <span id="siteInfoIcon" aria-hidden="true"></span>
       </button>
       <div id="siteInfoPopover" role="dialog" aria-label="Page information">
-        <p id="siteInfoPopoverText"></p>
+        <div id="siteInfoPopoverContent"></div>
       </div>
     </div>
     <input id="url" type="text" placeholder="Search or enter address" title="Type a URL, search terms, or bavarium:// address — Enter to go" autocomplete="off" spellcheck="true" enterkeyhint="go" aria-label="Address and search" />
