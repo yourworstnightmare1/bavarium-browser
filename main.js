@@ -417,6 +417,8 @@ let downloadProgressBroadcastTimer = null;
 let currentProxyListenPort = null;
 /** @type {'ultraviolet' | 'scramjet' | null} */
 let currentProxyKind = null;
+/** One-shot notice when the configured proxy port was unavailable at app startup. */
+let proxyPortStartupRelocateNotified = false;
 let pendingBavariumLaunchUrl = null;
 
 const NODE = process.execPath;
@@ -1060,6 +1062,29 @@ function broadcastProxyPortState(payload) {
   broadcastToAllWindows('settings-updated', merged);
 }
 
+function buildProxyPortStartupRelocateMessage(newPort) {
+  return (
+    `The port of your proxy was changed to ${newPort} because the previous one you applied was unavailable at startup. If you need the old port, make sure there is no services or apps that are using that port in the background. You can still change the port by going to Settings > Proxy configuration and changing the port for your active proxy.`
+  );
+}
+
+function maybeNotifyProxyPortStartupRelocate(previousPort, newPort) {
+  const prev = parseInt(String(previousPort), 10);
+  const next = parseInt(String(newPort), 10);
+  if (proxyPortStartupRelocateNotified) return;
+  if (!Number.isFinite(prev) || !Number.isFinite(next) || prev === next) return;
+  proxyPortStartupRelocateNotified = true;
+  const parent = dialogParentWindow();
+  dialog.showMessageBox(parent && !parent.isDestroyed() ? parent : undefined, {
+    type: 'info',
+    buttons: ['OK'],
+    defaultId: 0,
+    noLink: true,
+    title: APP_DISPLAY_NAME,
+    message: buildProxyPortStartupRelocateMessage(next),
+  });
+}
+
 function persistProxyPortInSettings(proxyType, port, options = {}) {
   const { notify = true } = options;
   const settingsPath = path.join(app.getPath('userData'), 'settings.json');
@@ -1128,7 +1153,7 @@ function attachProxyExitRecovery(child, proxyType, boundPort, startedAt) {
  * @returns {Promise<number | null>}
  */
 async function spawnProxyOnPort(proxyType, port, options = {}) {
-  const { preferredPort = port, allowRetry = true } = options;
+  const { preferredPort = port, allowRetry = true, atStartup = false } = options;
   const child = startProxy(proxyType, port);
   if (!child) {
     broadcastProxyPortState({
@@ -1166,6 +1191,7 @@ async function spawnProxyOnPort(proxyType, port, options = {}) {
         return spawnProxyOnPort(proxyType, nextPort, {
           preferredPort,
           allowRetry: false,
+          atStartup,
         });
       }
     }
@@ -1178,11 +1204,17 @@ async function spawnProxyOnPort(proxyType, port, options = {}) {
     return null;
   }
 
-  if (port !== parseInt(String(preferredPort), 10)) {
+  const preferred = parseInt(String(preferredPort), 10);
+  if (port !== preferred) {
+    if (atStartup) {
+      maybeNotifyProxyPortStartupRelocate(preferred, port);
+    }
     broadcastProxyPortState({
       status: 'relocated',
       proxyType,
       port,
+      previousPort: Number.isFinite(preferred) ? preferred : preferredPort,
+      startupRelocated: atStartup === true,
       message: `Port ${preferredPort} was in use; proxy is running on ${port}.`,
       ready: true,
     });
@@ -1205,11 +1237,12 @@ async function spawnProxyOnPort(proxyType, port, options = {}) {
  * Pick a listen port (configured or next free) and spawn the proxy child.
  * @returns {Promise<number | null>}
  */
-async function startProxyWithResolvedPort(proxyType, preferredPort) {
+async function startProxyWithResolvedPort(proxyType, preferredPort, options = {}) {
   if (proxyType !== 'ultraviolet' && proxyType !== 'scramjet') {
     return null;
   }
 
+  const { atStartup = false } = options;
   const preferred = parseInt(String(preferredPort), 10);
   const fallback = defaultPortForProxyType(proxyType);
   const startFrom = Number.isFinite(preferred) ? preferred : fallback;
@@ -1237,7 +1270,7 @@ async function startProxyWithResolvedPort(proxyType, preferredPort) {
     persistProxyPortInSettings(proxyType, port);
   }
 
-  return spawnProxyOnPort(proxyType, port, { preferredPort: startFrom });
+  return spawnProxyOnPort(proxyType, port, { preferredPort: startFrom, atStartup });
 }
 
 function waitForPort(port, callback) {
@@ -3450,7 +3483,7 @@ async function startSelectedProxy() {
     ready: false,
   });
 
-  return startProxyWithResolvedPort(proxyType, preferred);
+  return startProxyWithResolvedPort(proxyType, preferred, { atStartup: true });
 }
 
 // 🔥 LIVE SWITCHING

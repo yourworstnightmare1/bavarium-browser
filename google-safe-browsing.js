@@ -6,7 +6,7 @@ const GOOGLE_SB_V4_FIND_URL =
   'https://safebrowsing.googleapis.com/v4/threatMatches:find';
 
 const CLIENT_ID = 'bavarium-browser';
-const CLIENT_VERSION = '2.0.0-b';
+const CLIENT_VERSION = '3.0.0-b';
 
 const THREAT_TYPES = [
   'MALWARE',
