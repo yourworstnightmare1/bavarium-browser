@@ -18,6 +18,7 @@ let urlBarListenersInstalled = false;
 let toolbarMenuInstalled = false;
 /** Debounced UV shell hash updates per webview. */
 const uvShellNavByView = new WeakMap();
+const sjShellNavByView = new WeakMap();
 
 function setAltMenuBarHeld(held) {
   if (process.platform === "darwin") {
@@ -1051,8 +1052,8 @@ function wrapUrlForProxyIfNeeded(url, settings) {
         ? settings.uvPort || 8080
         : settings.scramjetPort || 3000;
     const portBase = `http://localhost:${port}`;
-    // Ultraviolet on macOS: hash routing survives shell reloads better than ?url= alone.
-    if (settings.proxyType === "ultraviolet") {
+    // Hash routing survives shell reloads better than ?url= alone on macOS webviews.
+    if (settings.proxyType === "ultraviolet" || settings.proxyType === "scramjet") {
       return `${portBase}/bavarium-nav/#url=${encodeURIComponent(url)}`;
     }
     return `${portBase}/?url=${encodeURIComponent(url)}`;
@@ -1650,6 +1651,7 @@ function newTab(url = null, options = {}) {
     "nodeIntegration=yes,contextIsolation=no,sandbox=no"
   );
   view.style.display = "none";
+  view.style.pointerEvents = "none";
 
   view.addEventListener("dom-ready", () => {
     try {
@@ -1691,10 +1693,10 @@ function newTab(url = null, options = {}) {
       void injectFrameCapOnWebview(view);
       scheduleGuestTabPageMetaRefresh(view);
       const settings = getSettings();
-      if (settings.proxyType === "ultraviolet" && viewLooksLikeProxyShell(view)) {
+      if (viewLooksLikeProxyShell(view)) {
         const inner = proxyShellTargetFromUrl(webviewDisplayUrl(view));
         if (inner) {
-          scheduleUltravioletShellNavigation(view, inner);
+          scheduleProxyShellNavigation(view, inner, settings);
         }
       }
     } catch (_) {}
@@ -1743,10 +1745,10 @@ function newTab(url = null, options = {}) {
         } else {
           te0.fullTitle = "";
         }
-        if (settings.proxyType === "ultraviolet") {
+        if (viewLooksLikeProxyShell(view)) {
           const inner = proxyShellTargetFromUrl(e.url || "");
           if (inner) {
-            scheduleUltravioletShellNavigation(view, inner);
+            scheduleProxyShellNavigation(view, inner, settings);
           }
         }
       } else {
@@ -1784,10 +1786,10 @@ function newTab(url = null, options = {}) {
         te0.guestPage = meta;
         te0.fullTitle = meta.title || "";
       }
-      if (settings.proxyType === "ultraviolet") {
+      if (viewLooksLikeProxyShell(view)) {
         const inner = proxyShellTargetFromUrl(e.url || "");
         if (inner) {
-          scheduleUltravioletShellNavigation(view, inner);
+          scheduleProxyShellNavigation(view, inner, settings);
         }
       }
       refreshTabTooltip(te0);
@@ -1818,13 +1820,10 @@ function newTab(url = null, options = {}) {
   view.addEventListener("did-finish-load", () => {
     const te0 = tabEntryForView(view);
     const settingsOnLoad = getSettings();
-    if (
-      settingsOnLoad.proxyType === "ultraviolet" &&
-      viewLooksLikeProxyShell(view)
-    ) {
+    if (viewLooksLikeProxyShell(view)) {
       const innerOnLoad = proxyShellTargetFromUrl(webviewDisplayUrl(view));
       if (innerOnLoad) {
-        scheduleUltravioletShellNavigation(view, innerOnLoad);
+        scheduleProxyShellNavigation(view, innerOnLoad, settingsOnLoad);
       }
     }
     try {
@@ -2022,6 +2021,7 @@ function closeFindInPage() {
       currentTab.view.stopFindInPage("clearSelection");
     } catch (_) {}
   }
+  schedulePublishBookmarkBarLayout();
 }
 
 function openFindInPage() {
@@ -2036,6 +2036,7 @@ function openFindInPage() {
   if (q && currentTab && currentTab.view && currentTab.view.findInPage) {
     currentTab.view.findInPage(q, { forward: true });
   }
+  schedulePublishBookmarkBarLayout();
 }
 
 function findInPageSchedule() {
@@ -2063,6 +2064,17 @@ function findInPageNext(forward) {
   v.findInPage(q, { forward, findNext: true });
 }
 
+function setTabWebviewVisible(view, visible) {
+  if (!view) return;
+  if (visible) {
+    view.style.display = "flex";
+    view.style.pointerEvents = "auto";
+  } else {
+    view.style.display = "none";
+    view.style.pointerEvents = "none";
+  }
+}
+
 function switchTab(id) {
   const findBar = document.getElementById("findBar");
   if (findBar && findBar.style.display === "flex") {
@@ -2070,17 +2082,18 @@ function switchTab(id) {
   }
 
   tabs.forEach(t => {
-    t.view.style.display = "none";
+    setTabWebviewVisible(t.view, false);
     t.tab.classList.remove("active");
   });
 
   const selected = tabs.find(t => t.id === id);
   if (!selected) return;
 
-  selected.view.style.display = "flex";
+  setTabWebviewVisible(selected.view, true);
   selected.tab.classList.add("active");
 
   currentTab = selected;
+  schedulePublishBookmarkBarLayout();
   tabs.forEach((t) => stopGuestPageMetaWatcher(t.id));
   refreshStaleProxyTabIfNeeded(selected);
   startGuestPageMetaWatcher(selected);
@@ -2383,13 +2396,6 @@ function getSettings() {
   if (settings.fpsSyncDisplay === undefined) settings.fpsSyncDisplay = true;
   if (settings.fpsLimit === undefined) settings.fpsLimit = 60;
   if (settings.safeBrowsingEnabled === undefined) settings.safeBrowsingEnabled = true;
-  if (
-    settings.safeBrowsingProvider !== "google" &&
-    settings.safeBrowsingProvider !== "local" &&
-    settings.safeBrowsingProvider !== "both"
-  ) {
-    settings.safeBrowsingProvider = "both";
-  }
   if (settings.safeBrowsingApiKey === undefined) settings.safeBrowsingApiKey = "";
   if (
     settings.externalLinkOpenPreference !== "external" &&
@@ -2399,6 +2405,9 @@ function getSettings() {
   }
   if (settings.hideBookmarkBarExceptHomepage === undefined) {
     settings.hideBookmarkBarExceptHomepage = false;
+  }
+  if (settings.bookmarkBarVisible === undefined) {
+    settings.bookmarkBarVisible = true;
   }
   if (settings.homepageCustomBackground === undefined) {
     settings.homepageCustomBackground = "";
@@ -2412,6 +2421,18 @@ function getSettings() {
   }
   if (settings.homepageShowProxyPort === undefined) {
     settings.homepageShowProxyPort = true;
+  }
+  if (settings.homepageTimeFormat !== "12" && settings.homepageTimeFormat !== "24") {
+    settings.homepageTimeFormat = "12";
+  }
+  if (settings.homepageShowClock === undefined) {
+    settings.homepageShowClock = true;
+  }
+  if (settings.homepageShowWeather === undefined) {
+    settings.homepageShowWeather = true;
+  }
+  if (settings.homepageWeatherCity === undefined) {
+    settings.homepageWeatherCity = "";
   }
   if (settings.showDevToolsOnScreenOverlay === undefined) {
     settings.showDevToolsOnScreenOverlay = false;
@@ -2466,12 +2487,20 @@ function updateBookmarkBarVisibility() {
   const bar = document.getElementById("bookmarkbar");
   if (!bar) return;
   const s = getSettings();
+  if (s.bookmarkBarVisible === false) {
+    bar.classList.add("bookmarkbar-user-hidden");
+    schedulePublishBookmarkBarLayout();
+    return;
+  }
+  bar.classList.remove("bookmarkbar-user-hidden");
   if (s.hideBookmarkBarExceptHomepage !== true) {
     bar.classList.remove("bookmarkbar-home-hidden");
+    schedulePublishBookmarkBarLayout();
     return;
   }
   const show = currentTab && tabMatchesConfiguredHomepage(currentTab);
   bar.classList.toggle("bookmarkbar-home-hidden", !show);
+  schedulePublishBookmarkBarLayout();
 }
 
 const DEV_CONSOLE_OVERLAY_MAX = 8;
@@ -2728,8 +2757,8 @@ function performNavigateToDestination(te, destination, settings) {
 
   if (te && te.view) {
     forceWebviewNavigation(te.view, url);
-    if (settings.proxyType === "ultraviolet") {
-      scheduleUltravioletShellNavigation(te.view, destination);
+    if (settings.proxyType === "ultraviolet" || settings.proxyType === "scramjet") {
+      scheduleProxyShellNavigation(te.view, destination, settings);
     }
     scheduleGuestTabPageMetaRefresh(te.view);
   }
@@ -3030,6 +3059,7 @@ function renderBookmarkBar() {
   items.forEach((bm) => {
     const wrap = document.createElement("span");
     wrap.className = "bookmark-item";
+    wrap.dataset.bookmarkId = bm.id;
     const bmName = (bm.title && bm.title.trim()) || "Bookmark";
     wrap.title = `Open: ${bmName}\n${bm.url}`;
 
@@ -3071,6 +3101,7 @@ function renderBookmarkBar() {
 
     bar.appendChild(wrap);
   });
+  schedulePublishBookmarkBarLayout();
 }
 
 let bookmarkAutofillGeneration = 0;
@@ -3175,10 +3206,106 @@ function saveBookmarkFromModal() {
   closeBookmarkEditor();
 }
 
+function removeBookmarkById(id) {
+  if (!id) return;
+  const list = loadBookmarks().filter((b) => b.id !== id);
+  saveBookmarksList(list);
+}
+
+async function setBookmarkBarVisible(visible) {
+  const disk = await ipcRenderer.invoke("get-settings");
+  const next = { ...disk, bookmarkBarVisible: visible !== false };
+  ipcRenderer.send("save-settings", next);
+  applySettingsPayload(next);
+}
+
+function isBookmarkBarShown() {
+  const bar = document.getElementById("bookmarkbar");
+  if (!bar) return false;
+  const style = window.getComputedStyle(bar);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
+
+function publishBookmarkBarLayout() {
+  const bar = document.getElementById("bookmarkbar");
+  const views = document.getElementById("views");
+  if (!bar || !views) return;
+  const visible = isBookmarkBarShown();
+  const barRect = bar.getBoundingClientRect();
+  const viewsRect = views.getBoundingClientRect();
+  const items = [];
+  if (visible) {
+    bar.querySelectorAll(".bookmark-item").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      items.push({
+        id: el.dataset.bookmarkId || "",
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+      });
+    });
+  }
+  ipcRenderer.send("bookmark-bar-layout-updated", {
+    visible,
+    bar: {
+      left: barRect.left,
+      top: barRect.top,
+      right: barRect.right,
+      bottom: barRect.bottom,
+    },
+    items,
+    viewsTop: viewsRect.top,
+  });
+}
+
+let publishBookmarkBarLayoutTimer = null;
+function schedulePublishBookmarkBarLayout() {
+  if (publishBookmarkBarLayoutTimer) {
+    cancelAnimationFrame(publishBookmarkBarLayoutTimer);
+  }
+  publishBookmarkBarLayoutTimer = requestAnimationFrame(() => {
+    publishBookmarkBarLayoutTimer = null;
+    publishBookmarkBarLayout();
+  });
+}
+
+function installBookmarkBarContextMenu() {
+  if (document.__bavariumBookmarkBarContextMenu) return;
+  document.__bavariumBookmarkBarContextMenu = true;
+  schedulePublishBookmarkBarLayout();
+  window.addEventListener("resize", schedulePublishBookmarkBarLayout);
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(() => schedulePublishBookmarkBarLayout());
+    const bar = document.getElementById("bookmarkbar");
+    const views = document.getElementById("views");
+    if (bar) ro.observe(bar);
+    if (views) ro.observe(views);
+  }
+  ipcRenderer.on("bookmark-bar-menu-action", (_e, payload) => {
+    if (!payload || typeof payload !== "object") return;
+    switch (payload.action) {
+      case "add":
+        openBookmarkEditor(null);
+        break;
+      case "edit":
+        if (payload.bookmarkId) openBookmarkEditor(payload.bookmarkId);
+        break;
+      case "remove":
+        if (payload.bookmarkId) removeBookmarkById(payload.bookmarkId);
+        break;
+      case "hide":
+        void setBookmarkBarVisible(false);
+        break;
+      default:
+        break;
+    }
+  });
+}
+
 function removeBookmarkFromModal() {
   if (!editingBookmarkId) return;
-  const list = loadBookmarks().filter((b) => b.id !== editingBookmarkId);
-  saveBookmarksList(list);
+  removeBookmarkById(editingBookmarkId);
   closeBookmarkEditor();
 }
 
@@ -3239,6 +3366,43 @@ function isLocalProxyShellHref(href) {
   } catch (_) {
     return false;
   }
+}
+
+function scheduleProxyShellNavigation(view, destinationUrl, settings) {
+  if (!view || !destinationUrl || !settings) return;
+  if (settings.proxyType === "ultraviolet") {
+    scheduleUltravioletShellNavigation(view, destinationUrl);
+  } else if (settings.proxyType === "scramjet") {
+    scheduleScramjetShellNavigation(view, destinationUrl);
+  }
+}
+
+/** Push a new Scramjet target into an already-loaded shell (macOS often skips full reload). */
+function scheduleScramjetShellNavigation(view, destinationUrl) {
+  if (!view || !destinationUrl) return;
+  const dest = String(destinationUrl);
+  let state = sjShellNavByView.get(view);
+  if (!state) {
+    state = { dest: "", timer: null };
+    sjShellNavByView.set(view, state);
+  }
+  if (state.dest === dest && state.timer) return;
+  state.dest = dest;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    const payload = JSON.stringify(dest);
+    const js = `(function() {
+      if (typeof window.bavariumStartProxyNavigation === "function") {
+        window.bavariumStartProxyNavigation(${payload});
+        return;
+      }
+      var hash = "url=" + encodeURIComponent(${payload});
+      if (location.hash.replace(/^#/, "") === hash) return;
+      location.hash = hash;
+    })();`;
+    webviewGuestExecuteJavaScript(view, js, true).catch(() => {});
+  }, 80);
 }
 
 /** Push a new UV target into an already-loaded shell (macOS often skips full reload). */
@@ -3322,29 +3486,20 @@ async function refresh() {
 
   if (newSrc) {
     forceWebviewNavigation(te.view, newSrc);
-    if (settings.proxyType === "ultraviolet") {
-      try {
-        const u = new URL(newSrc);
-        if (u.searchParams.has("url")) {
-          scheduleUltravioletShellNavigation(
-            te.view,
-            decodeURIComponent(u.searchParams.get("url"))
-          );
-        }
-      } catch (_) {}
+    if (settings.proxyType === "ultraviolet" || settings.proxyType === "scramjet") {
+      const inner = proxyShellTargetFromUrl(newSrc);
+      if (inner) {
+        scheduleProxyShellNavigation(te.view, inner, settings);
+      }
     }
     scheduleGuestTabPageMetaRefresh(te.view);
     if (currentTab && currentTab.id === te.id && !urlBarIsBeingEdited()) {
-      try {
-        const u = new URL(newSrc);
-        if (u.searchParams.has("url")) {
-          const inner = normalizeRemoteUrl(
-            decodeURIComponent(u.searchParams.get("url"))
-          );
-          const urlInput = document.getElementById("url");
-          if (urlInput && inner) urlInput.value = inner;
-        }
-      } catch (_) {}
+      const inner = proxyShellTargetFromUrl(newSrc);
+      if (inner) {
+        const normalized = normalizeRemoteUrl(inner);
+        const urlInput = document.getElementById("url");
+        if (urlInput && normalized) urlInput.value = normalized;
+      }
     }
     return;
   }
@@ -4050,11 +4205,6 @@ function applySettingsPayload(settings) {
     fpsSyncDisplay: settings.fpsSyncDisplay !== false,
     fpsLimit: normalizeFpsLimitSetting(settings.fpsLimit),
     safeBrowsingEnabled: settings.safeBrowsingEnabled !== false,
-    safeBrowsingProvider:
-      settings.safeBrowsingProvider === "google" ||
-      settings.safeBrowsingProvider === "local"
-        ? settings.safeBrowsingProvider
-        : "both",
     safeBrowsingApiKey: settings.safeBrowsingApiKey || "",
     externalLinkOpenPreference:
       settings.externalLinkOpenPreference === "external" ||
@@ -4062,11 +4212,16 @@ function applySettingsPayload(settings) {
         ? settings.externalLinkOpenPreference
         : "ask",
     hideBookmarkBarExceptHomepage: settings.hideBookmarkBarExceptHomepage === true,
+    bookmarkBarVisible: settings.bookmarkBarVisible !== false,
     homepageCustomBackground: settings.homepageCustomBackground || "",
     homepageShowTiles: settings.homepageShowTiles !== false,
     homepageShowVersionInfo: settings.homepageShowVersionInfo !== false,
     homepageShowSystemInfo: settings.homepageShowSystemInfo !== false,
     homepageShowProxyPort: settings.homepageShowProxyPort !== false,
+    homepageTimeFormat: settings.homepageTimeFormat === "24" ? "24" : "12",
+    homepageShowClock: settings.homepageShowClock !== false,
+    homepageShowWeather: settings.homepageShowWeather !== false,
+    homepageWeatherCity: settings.homepageWeatherCity || "",
     showDevToolsOnScreenOverlay: settings.showDevToolsOnScreenOverlay === true,
   };
   localStorage.setItem("settings", JSON.stringify(merged));
@@ -4443,6 +4598,7 @@ function finishStartupShell() {
   startupShellDeferred = false;
   stopStartupProxyPoll();
   dismissStartupSplash();
+  schedulePublishBookmarkBarLayout();
   if (pendingBootstrapTab) {
     const p = pendingBootstrapTab;
     pendingBootstrapTab = null;
@@ -4658,6 +4814,7 @@ window.onload = async () => {
   });
 
   renderBookmarkBar();
+  installBookmarkBarContextMenu();
   updateBookmarkBarVisibility();
 
   const btnAddBm = document.getElementById("btnAddBookmark");

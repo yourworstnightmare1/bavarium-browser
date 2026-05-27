@@ -254,7 +254,6 @@ function installAutoApplySettings() {
     "proxyEnabled",
     "historyEnabled",
     "safeBrowsingEnabled",
-    "safeBrowsingProvider",
     "safeBrowsingApiKey",
     "askBeforeDownload",
     "trackPreReleaseUpdates",
@@ -263,10 +262,14 @@ function installAutoApplySettings() {
     "fpsLimitEnabled",
     "fpsSyncDisplay",
     "hideBookmarkBarExceptHomepage",
+    "bookmarkBarVisible",
     "homepageShowTiles",
     "homepageShowVersionInfo",
     "homepageShowSystemInfo",
     "homepageShowProxyPort",
+    "homepageTimeFormat",
+    "homepageShowClock",
+    "homepageShowWeather",
     "showDevToolsOnScreenOverlay",
   ].forEach((id) => {
     const el = document.getElementById(id);
@@ -278,6 +281,12 @@ function installAutoApplySettings() {
   if (safeBrowsingApiKeyEl) {
     safeBrowsingApiKeyEl.addEventListener("change", scheduleDebounced);
     safeBrowsingApiKeyEl.addEventListener("input", scheduleDebounced);
+  }
+
+  const homepageWeatherCityEl = document.getElementById("homepageWeatherCity");
+  if (homepageWeatherCityEl) {
+    homepageWeatherCityEl.addEventListener("change", scheduleDebounced);
+    homepageWeatherCityEl.addEventListener("input", scheduleDebounced);
   }
 
   ["uvPort", "scramjetPort", "fpsLimit"].forEach((id) => {
@@ -626,12 +635,6 @@ function applySettingsToForm() {
   document.getElementById("historyEnabled").checked = s.historyEnabled !== false;
   const safeBrowsing = document.getElementById("safeBrowsingEnabled");
   if (safeBrowsing) safeBrowsing.checked = s.safeBrowsingEnabled !== false;
-  const safeBrowsingProvider = document.getElementById("safeBrowsingProvider");
-  if (safeBrowsingProvider) {
-    const p = s.safeBrowsingProvider;
-    safeBrowsingProvider.value =
-      p === "google" || p === "local" || p === "both" ? p : "both";
-  }
   const safeBrowsingApiKey = document.getElementById("safeBrowsingApiKey");
   if (safeBrowsingApiKey) safeBrowsingApiKey.value = s.safeBrowsingApiKey || "";
   void refreshSafeBrowsingStatusUi();
@@ -658,8 +661,20 @@ function applySettingsToForm() {
   syncAboutPrereleaseUi();
   const hideBm = document.getElementById("hideBookmarkBarExceptHomepage");
   if (hideBm) hideBm.checked = s.hideBookmarkBarExceptHomepage === true;
+  const showBmBar = document.getElementById("bookmarkBarVisible");
+  if (showBmBar) showBmBar.checked = s.bookmarkBarVisible !== false;
   const showTiles = document.getElementById("homepageShowTiles");
   if (showTiles) showTiles.checked = s.homepageShowTiles !== false;
+  const showClock = document.getElementById("homepageShowClock");
+  if (showClock) showClock.checked = s.homepageShowClock !== false;
+  const timeFormat = document.getElementById("homepageTimeFormat");
+  if (timeFormat) {
+    timeFormat.value = s.homepageTimeFormat === "24" ? "24" : "12";
+  }
+  const showWeather = document.getElementById("homepageShowWeather");
+  if (showWeather) showWeather.checked = s.homepageShowWeather !== false;
+  const weatherCity = document.getElementById("homepageWeatherCity");
+  if (weatherCity) weatherCity.value = s.homepageWeatherCity || "";
   syncHomepageBackgroundPathUi(s.homepageCustomBackground || "");
   const showVer = document.getElementById("homepageShowVersionInfo");
   if (showVer) showVer.checked = s.homepageShowVersionInfo !== false;
@@ -694,8 +709,6 @@ function collectSettingsFromForm() {
     homepage: document.getElementById("homepage").value.trim() || "bavarium",
     historyEnabled: document.getElementById("historyEnabled").checked,
     safeBrowsingEnabled: !!document.getElementById("safeBrowsingEnabled")?.checked,
-    safeBrowsingProvider:
-      document.getElementById("safeBrowsingProvider")?.value || "both",
     safeBrowsingApiKey:
       document.getElementById("safeBrowsingApiKey")?.value.trim() || "",
     askBeforeDownload: document.getElementById("askBeforeDownload").checked,
@@ -711,6 +724,8 @@ function collectSettingsFromForm() {
     hideBookmarkBarExceptHomepage: !!document.getElementById(
       "hideBookmarkBarExceptHomepage"
     )?.checked,
+    bookmarkBarVisible:
+      document.getElementById("bookmarkBarVisible")?.checked !== false,
     homepageCustomBackground: currentSettings.homepageCustomBackground || "",
     homepageShowTiles:
       document.getElementById("homepageShowTiles")?.checked !== false,
@@ -720,6 +735,14 @@ function collectSettingsFromForm() {
       document.getElementById("homepageShowSystemInfo")?.checked !== false,
     homepageShowProxyPort:
       document.getElementById("homepageShowProxyPort")?.checked !== false,
+    homepageTimeFormat:
+      document.getElementById("homepageTimeFormat")?.value === "24" ? "24" : "12",
+    homepageShowClock:
+      document.getElementById("homepageShowClock")?.checked !== false,
+    homepageShowWeather:
+      document.getElementById("homepageShowWeather")?.checked !== false,
+    homepageWeatherCity:
+      document.getElementById("homepageWeatherCity")?.value.trim() || "",
     showDevToolsOnScreenOverlay: !!document.getElementById(
       "showDevToolsOnScreenOverlay"
     )?.checked,
@@ -750,30 +773,11 @@ async function refreshSafeBrowsingStatusUi() {
   if (!el) return;
   try {
     const status = await ipcRenderer.invoke("safe-browsing-get-status");
-    const parts = [];
     if (status && status.googleConfigured) {
-      parts.push("Google Safe Browsing: API key configured.");
-    } else if (
-      document.getElementById("safeBrowsingProvider")?.value === "google"
-    ) {
-      parts.push("Google Safe Browsing: add an API key to enable checks.");
-    }
-    if (status && status.hostCount) {
-      const when = status.updatedAt
-        ? new Date(status.updatedAt).toLocaleString()
-        : "seed file";
-      parts.push(
-        `Local blocklist: ${Number(status.hostCount).toLocaleString()} domains (${status.source || "unknown"}, updated ${when}).`
-      );
+      el.textContent = "Google Safe Browsing: API key configured.";
     } else {
-      parts.push(
-        "Local blocklist: not loaded yet — use “Update local blocklist now” or wait for startup sync."
-      );
+      el.textContent = "Google Safe Browsing: add an API key to enable checks.";
     }
-    if (status && status.lastError) {
-      parts.push(`Last local refresh issue: ${status.lastError}`);
-    }
-    el.textContent = parts.join(" ");
   } catch (_) {
     el.textContent = "Safe Browsing status unavailable.";
   }
@@ -1284,19 +1288,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     await ipcRenderer.invoke("clear-browsing-history");
     await renderHistory();
   });
-
-  const refreshSafeBrowsingBtn = document.getElementById("refreshSafeBrowsingBtn");
-  if (refreshSafeBrowsingBtn) {
-    refreshSafeBrowsingBtn.addEventListener("click", async () => {
-      refreshSafeBrowsingBtn.disabled = true;
-      try {
-        await ipcRenderer.invoke("safe-browsing-refresh-list");
-        await refreshSafeBrowsingStatusUi();
-      } finally {
-        refreshSafeBrowsingBtn.disabled = false;
-      }
-    });
-  }
 
   const sitePermAddBtn = document.getElementById("sitePermAddBtn");
   const sitePermAddOrigin = document.getElementById("sitePermAddOrigin");

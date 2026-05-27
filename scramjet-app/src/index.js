@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { fileURLToPath } from "url";
 import { hostname } from "node:os";
@@ -10,6 +11,15 @@ import fastifyStatic from "@fastify/static";
 import { scramjetPath } from "@mercuryworkshop/scramjet/path";
 import { libcurlPath } from "@mercuryworkshop/libcurl-transport";
 import { baremuxPath } from "@mercuryworkshop/bare-mux/node";
+
+const require = createRequire(import.meta.url);
+const controllerPath = dirname(
+	require.resolve("@mercuryworkshop/scramjet-controller"),
+);
+const epoxyPath = join(
+	dirname(dirname(require.resolve("@mercuryworkshop/epoxy-transport"))),
+	"dist",
+);
 
 const publicPath = fileURLToPath(new URL("../public/", import.meta.url));
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -83,8 +93,10 @@ const fastify = Fastify({
 	serverFactory: (handler) => {
 		return createServer()
 			.on("request", (req, res) => {
-				res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-				res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+				// Do not set COOP/COEP globally. With cross-origin isolation enabled on the
+				// shell, Scramjet adds COEP to proxied documents, which causes
+				// ERR_BLOCKED_BY_RESPONSE when loading sites inside the proxy iframe
+				// (notably in Electron webviews).
 				handler(req, res);
 			})
 			.on("upgrade", (req, socket, head) => {
@@ -100,6 +112,14 @@ fastify.get("/LICENSE", async (req, reply) => {
 	return reply.send(await getLicenseHtml());
 });
 
+// Bavarium shell navigations use this path so macOS webviews reload when the target changes.
+async function serveBavariumNav(_req, reply) {
+	return reply.sendFile("index.html");
+}
+
+fastify.get("/bavarium-nav", serveBavariumNav);
+fastify.get("/bavarium-nav/", serveBavariumNav);
+
 fastify.register(fastifyStatic, {
 	root: publicPath,
 	decorateReply: true,
@@ -107,13 +127,25 @@ fastify.register(fastifyStatic, {
 
 fastify.register(fastifyStatic, {
 	root: scramjetPath,
-	prefix: "/scram/",
+	prefix: "/scramjet/",
+	decorateReply: false,
+});
+
+fastify.register(fastifyStatic, {
+	root: controllerPath,
+	prefix: "/controller/",
 	decorateReply: false,
 });
 
 fastify.register(fastifyStatic, {
 	root: libcurlPath,
 	prefix: "/libcurl/",
+	decorateReply: false,
+});
+
+fastify.register(fastifyStatic, {
+	root: epoxyPath,
+	prefix: "/epoxy/",
 	decorateReply: false,
 });
 

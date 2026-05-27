@@ -254,17 +254,33 @@ const GUEST_TUNNEL_DECODE_CORE = `
       );
     } catch (e) { return false; }
   }
+  function decodeScramjetEncPath(enc) {
+    if (!enc) return '';
+    try {
+      var dec = decodeURIComponent(enc);
+      if (/^https?:\\/\\//i.test(dec) && isRemoteHttpHref(dec)) return dec;
+    } catch (e) {}
+    return '';
+  }
   function decodeScramjetUrl(href) {
     try {
       var u = new URL(href, location.origin);
       var path = u.pathname || '';
+      var sjIdx = path.indexOf('/~/sj/');
+      if (sjIdx !== -1) {
+        var rest = path.slice(sjIdx + '/~/sj/'.length);
+        var slash = rest.indexOf('/');
+        if (slash !== -1) {
+          var hit = decodeScramjetEncPath(rest.slice(slash + 1));
+          if (hit) return hit;
+        }
+      }
       var marker = '/scramjet/';
       var idx = path.indexOf(marker);
-      if (idx === -1) return '';
-      var enc = path.slice(idx + marker.length);
-      if (!enc) return '';
-      var dec = decodeURIComponent(enc);
-      if (/^https?:\\/\\//i.test(dec) && isRemoteHttpHref(dec)) return dec;
+      if (idx !== -1) {
+        var hit2 = decodeScramjetEncPath(path.slice(idx + marker.length));
+        if (hit2) return hit2;
+      }
     } catch (e) {}
     return '';
   }
@@ -762,6 +778,7 @@ function createWindow() {
 
   attachWindowQuitGuard(win);
   setupHoldAltMenuBar(win);
+  setupShellBookmarkBarContextMenu(win);
   win.webContents.once('did-finish-load', () => {
     sendProxyStartupStateToWindow(win);
     if (pendingBavariumLaunchUrl) {
@@ -1333,16 +1350,10 @@ function normalizeExternalLinkOpenPreference(raw) {
   return 'ask';
 }
 
-function normalizeSafeBrowsingProvider(raw) {
-  if (raw === 'google' || raw === 'local' || raw === 'both') return raw;
-  return 'both';
-}
-
 function safeBrowsingOptionsFromSettings(settings) {
   const s = settings || mergedSettingsFromDisk();
   return {
     enabled: s.safeBrowsingEnabled !== false,
-    provider: normalizeSafeBrowsingProvider(s.safeBrowsingProvider),
     googleApiKey: String(s.safeBrowsingApiKey || '').trim(),
   };
 }
@@ -1357,6 +1368,29 @@ function isBavariumShellFilePageUrl(pageUrl) {
   } catch {
     return false;
   }
+}
+
+function webContentsIsHomepageShell(webContents) {
+  if (!webContents || webContents.isDestroyed()) return false;
+  try {
+    return isBavariumShellFilePageUrl(webContents.getURL());
+  } catch {
+    return false;
+  }
+}
+
+async function fetchHomepageWeatherCoordsFromIp() {
+  const res = await fetch('https://ipapi.co/json/', {
+    headers: { 'User-Agent': 'Bavarium-Browser' },
+  });
+  if (!res.ok) throw new Error(`IP geolocation HTTP ${res.status}`);
+  const data = await res.json();
+  const lat = data.latitude;
+  const lon = data.longitude;
+  if (typeof lat !== 'number' || typeof lon !== 'number') {
+    throw new Error('IP geolocation missing coordinates');
+  }
+  return { lat, lon };
 }
 
 function isUnsafeWarningPageUrl(pageUrl) {
@@ -1375,9 +1409,7 @@ let safeBrowsingService = null;
 
 function getSafeBrowsingService() {
   if (!safeBrowsingService) {
-    safeBrowsingService = createSafeBrowsingService({
-      userDataPath: app.getPath('userData'),
-    });
+    safeBrowsingService = createSafeBrowsingService();
   }
   return safeBrowsingService;
 }
@@ -1416,7 +1448,6 @@ function mergedSettingsFromDisk() {
     homepage: normalizeHomepageFromDisk(s.homepage),
     historyEnabled: s.historyEnabled !== false,
     safeBrowsingEnabled: s.safeBrowsingEnabled !== false,
-    safeBrowsingProvider: normalizeSafeBrowsingProvider(s.safeBrowsingProvider),
     safeBrowsingApiKey: String(s.safeBrowsingApiKey || '').trim(),
     askBeforeDownload: s.askBeforeDownload !== false,
     downloadPath: s.downloadPath || '',
@@ -1430,11 +1461,16 @@ function mergedSettingsFromDisk() {
     fpsLimit: normalizeFpsLimitValue(s.fpsLimit),
     fpsSyncDisplay: s.fpsSyncDisplay !== false,
     hideBookmarkBarExceptHomepage: s.hideBookmarkBarExceptHomepage === true,
+    bookmarkBarVisible: s.bookmarkBarVisible !== false,
     homepageCustomBackground: String(s.homepageCustomBackground || '').trim(),
     homepageShowTiles: s.homepageShowTiles !== false,
     homepageShowVersionInfo: s.homepageShowVersionInfo !== false,
     homepageShowSystemInfo: s.homepageShowSystemInfo !== false,
     homepageShowProxyPort: s.homepageShowProxyPort !== false,
+    homepageTimeFormat: s.homepageTimeFormat === '24' ? '24' : '12',
+    homepageShowClock: s.homepageShowClock !== false,
+    homepageShowWeather: s.homepageShowWeather !== false,
+    homepageWeatherCity: String(s.homepageWeatherCity || '').trim(),
     showDevToolsOnScreenOverlay: s.showDevToolsOnScreenOverlay === true,
   };
 }
@@ -2082,7 +2118,10 @@ function guestUrlIsProxyTunnelMenu(url, settings) {
   try {
     const u = new URL(url);
     if (u.searchParams.has('url')) return true;
-    if (settings.proxyType === 'scramjet' && /\/scramjet\//i.test(u.pathname)) {
+    if (
+      settings.proxyType === 'scramjet' &&
+      (/\/~\/sj\//i.test(u.pathname) || /\/scramjet\//i.test(u.pathname))
+    ) {
       return true;
     }
     if (settings.proxyType === 'ultraviolet' && /\/uv\//i.test(u.pathname)) {
@@ -2130,19 +2169,41 @@ function canCopyProxiedUrlMenu(rawUrl, displayUrl, settings, linkURL) {
   return false;
 }
 
-/** Decode `http://localhost:PORT/scramjet/https%3A%2F%2F...` in the main process. */
+function decodeScramjetEncPathMenu(enc) {
+  if (!enc) return '';
+  try {
+    const dec = decodeURIComponent(enc);
+    return isRemoteHttpUrlForMenu(dec) ? dec : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/** Decode Scramjet tunnel paths (`/~/sj/{id}/…` or legacy `/scramjet/…`). */
+function decodeScramjetPathFromPathname(path) {
+  if (!path) return '';
+  const sjIdx = path.indexOf('/~/sj/');
+  if (sjIdx !== -1) {
+    const rest = path.slice(sjIdx + '/~/sj/'.length);
+    const slash = rest.indexOf('/');
+    if (slash !== -1) {
+      const hit = decodeScramjetEncPathMenu(rest.slice(slash + 1));
+      if (hit) return hit;
+    }
+  }
+  const marker = '/scramjet/';
+  const idx = path.indexOf(marker);
+  if (idx !== -1) {
+    return decodeScramjetEncPathMenu(path.slice(idx + marker.length));
+  }
+  return '';
+}
+
 function decodeScramjetTunnelUrlMenu(url) {
   if (!url || typeof url !== 'string') return '';
   try {
     const u = new URL(url);
-    const path = u.pathname || '';
-    const marker = '/scramjet/';
-    const idx = path.indexOf(marker);
-    if (idx === -1) return '';
-    const enc = path.slice(idx + marker.length);
-    if (!enc) return '';
-    const dec = decodeURIComponent(enc);
-    return isRemoteHttpUrlForMenu(dec) ? dec : '';
+    return decodeScramjetPathFromPathname(u.pathname || '');
   } catch (_) {
     return '';
   }
@@ -2442,6 +2503,114 @@ function viewSourceUrlForNewTabMenu(displayUrl, rawUrl) {
   return null;
 }
 
+/** Bookmark bar hit regions (window client coords), synced from renderer. */
+let bookmarkBarLayoutState = null;
+
+function resolveBookmarkBarHit(x, y) {
+  const layout = bookmarkBarLayoutState;
+  if (!layout || !layout.visible) return null;
+  const b = layout.bar;
+  if (!b || b.right <= b.left || b.bottom <= b.top) return null;
+  if (x < b.left || x > b.right || y < b.top || y > b.bottom) return null;
+  for (const item of layout.items || []) {
+    if (!item || !item.id) continue;
+    if (
+      x >= item.left &&
+      x <= item.right &&
+      y >= item.top &&
+      y <= item.bottom
+    ) {
+      return { bookmarkId: item.id };
+    }
+  }
+  return { bookmarkId: null };
+}
+
+function resolveBookmarkBarHitFromGuestMenu(params) {
+  const layout = bookmarkBarLayoutState;
+  if (!layout || !layout.visible) return null;
+  const x = params.x;
+  const y = params.y;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  // macOS/Electron: guest webviews often cover shell chrome; coords map to the window.
+  if (typeof layout.viewsTop === 'number' && y >= layout.viewsTop) return null;
+  return resolveBookmarkBarHit(x, y);
+}
+
+function popupBookmarkBarContextMenuMain(win, x, y, bookmarkId) {
+  if (!win || win.isDestroyed()) return;
+  /** @type {Electron.MenuItemConstructorOptions[]} */
+  const template = [];
+  if (bookmarkId) {
+    template.push(
+      {
+        label: 'Edit bookmark',
+        click: () => {
+          if (!win.isDestroyed()) {
+            win.webContents.send('bookmark-bar-menu-action', {
+              action: 'edit',
+              bookmarkId,
+            });
+          }
+        },
+      },
+      {
+        label: 'Remove bookmark',
+        click: () => {
+          if (!win.isDestroyed()) {
+            win.webContents.send('bookmark-bar-menu-action', {
+              action: 'remove',
+              bookmarkId,
+            });
+          }
+        },
+      },
+      { type: 'separator' }
+    );
+  } else {
+    template.push(
+      {
+        label: 'Add bookmark',
+        click: () => {
+          if (!win.isDestroyed()) {
+            win.webContents.send('bookmark-bar-menu-action', { action: 'add' });
+          }
+        },
+      },
+      { type: 'separator' }
+    );
+  }
+  template.push({
+    label: 'Hide bookmark bar',
+    click: () => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('bookmark-bar-menu-action', { action: 'hide' });
+      }
+    },
+  });
+  Menu.buildFromTemplate(template).popup({
+    window: win,
+    x: Math.round(x),
+    y: Math.round(y),
+  });
+}
+
+function setupShellBookmarkBarContextMenu(win) {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.on('context-menu', (event, params) => {
+    const hit = resolveBookmarkBarHit(params.x, params.y);
+    if (!hit) return;
+    event.preventDefault();
+    popupBookmarkBarContextMenuMain(win, params.x, params.y, hit.bookmarkId);
+  });
+}
+
+ipcMain.on('bookmark-bar-layout-updated', (_event, layout) => {
+  if (layout && typeof layout === 'object') {
+    bookmarkBarLayoutState = layout;
+  }
+});
+
 function browserWindowForGuestWebContents(guestWc) {
   let w = BrowserWindow.fromWebContents(guestWc);
   if (w && !w.isDestroyed()) return w;
@@ -2649,6 +2818,18 @@ function registerGuestWebviewContextMenu() {
       return { action: 'deny' };
     });
     wc.on('context-menu', (event, params) => {
+      const win = browserWindowForGuestWebContents(wc);
+      const bookmarkHit = resolveBookmarkBarHitFromGuestMenu(params);
+      if (bookmarkHit && win) {
+        event.preventDefault();
+        popupBookmarkBarContextMenuMain(
+          win,
+          params.x,
+          params.y,
+          bookmarkHit.bookmarkId
+        );
+        return;
+      }
       event.preventDefault();
       void popupGuestWebviewContextMenu(wc, params);
     });
@@ -3220,6 +3401,9 @@ function setupBavariumSitePermissionHandlers() {
 
   ses.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
     if (!SITE_PERMISSION_IDS.has(permission)) return false;
+    if (permission === 'geolocation' && webContentsIsHomepageShell(webContents)) {
+      return true;
+    }
     const origin = originFromPermissionContext(
       webContents,
       details,
@@ -3235,6 +3419,11 @@ function setupBavariumSitePermissionHandlers() {
   ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
     if (!SITE_PERMISSION_IDS.has(permission)) {
       callback(false);
+      return;
+    }
+
+    if (permission === 'geolocation' && webContentsIsHomepageShell(webContents)) {
+      callback(true);
       return;
     }
 
@@ -3960,14 +4149,8 @@ ipcMain.handle('safe-browsing-allow-host', (_event, url) => {
 ipcMain.handle('safe-browsing-get-status', () => {
   const s = mergedSettingsFromDisk();
   return getSafeBrowsingService().getStatus({
-    provider: s.safeBrowsingProvider,
     googleApiKey: s.safeBrowsingApiKey,
   });
-});
-
-ipcMain.handle('safe-browsing-refresh-list', async () => {
-  const status = await getSafeBrowsingService().refreshBlocklist(true);
-  return status;
 });
 
 ipcMain.handle('get-display-refresh-rate', () => ({
@@ -4051,6 +4234,19 @@ ipcMain.handle('show-browser-update-prompt', async (_event, result) => {
   return promptBrowserUpdateIfAvailable(result, trackPre);
 });
 
+function getMacOSProductVersion() {
+  try {
+    if (typeof process.getSystemVersion === 'function') {
+      const v = String(process.getSystemVersion() || '').trim();
+      if (v) return v;
+    }
+  } catch (_) {}
+  try {
+    return String(execFileSync('/usr/bin/sw_vers', ['-productVersion'], { encoding: 'utf8' })).trim();
+  } catch (_) {}
+  return '';
+}
+
 function formatHostPlatformArchLabel() {
   const archRaw = process.arch || 'unknown';
   const arch =
@@ -4063,11 +4259,8 @@ function formatHostPlatformArchLabel() {
     return `${name} [${arch}]`;
   }
   if (process.platform === 'darwin') {
-    const darwinMajor = parseInt(String(os.release()).split('.')[0], 10) || 0;
-    let name = 'macOS';
-    if (darwinMajor >= 24) name = 'macOS 15';
-    else if (darwinMajor >= 23) name = 'macOS 14';
-    else if (darwinMajor >= 22) name = 'macOS 13';
+    const version = getMacOSProductVersion();
+    const name = version ? `macOS ${version}` : 'macOS';
     return `${name} [${arch}]`;
   }
   if (process.platform === 'linux') {
@@ -4102,10 +4295,23 @@ function getNewtabFooterInfo() {
       settings.homepageCustomBackground
     ),
     homepageShowTiles: settings.homepageShowTiles !== false,
+    homepageTimeFormat: settings.homepageTimeFormat === '24' ? '24' : '12',
+    homepageShowClock: settings.homepageShowClock !== false,
+    homepageShowWeather: settings.homepageShowWeather !== false,
+    homepageWeatherCity: String(settings.homepageWeatherCity || '').trim(),
   };
 }
 
 ipcMain.handle('get-newtab-footer-info', () => getNewtabFooterInfo());
+
+ipcMain.handle('get-homepage-weather-coords', async () => {
+  try {
+    return await fetchHomepageWeatherCoordsFromIp();
+  } catch (e) {
+    console.warn('get-homepage-weather-coords', e);
+    return null;
+  }
+});
 
 ipcMain.handle('get-devtools-shortcut-label', () => getDevToolsShortcutLabel());
 

@@ -1,2 +1,0 @@
-# Fallback domains used only when remote blocklists cannot be downloaded.
-# One hostname per line. Live lists: CERT.PL Warning List + community phishing feed.

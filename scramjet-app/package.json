@@ -1,6 +1,6 @@
 {
 	"name": "scramjet-demo",
-	"version": "2.0.0",
+	"version": "2.0.67-alpha.1",
 	"description": "The demo application for Scramjet, a high-performance web proxy.",
 	"type": "module",
 	"engines": {
@@ -20,12 +20,14 @@
 	"author": "Mercury Workshop",
 	"license": "AGPL-3.0-only",
 	"dependencies": {
-		"ajv": "^8.18.0",
 		"@fastify/static": "^8.2.0",
 		"@mercuryworkshop/bare-mux": "^2.1.7",
+		"@mercuryworkshop/epoxy-transport": "^2.1.28",
 		"@mercuryworkshop/libcurl-transport": "^1.5.2",
-		"@mercuryworkshop/scramjet": "https://github.com/MercuryWorkshop/scramjet/releases/download/latest/mercuryworkshop-scramjet-2.0.0-alpha.tgz",
+		"@mercuryworkshop/scramjet": "https://github.com/MercuryWorkshop/scramjet/releases/download/v2.0.67-alpha.1/mercuryworkshop-scramjet-2.0.67-alpha.1.tgz",
+		"@mercuryworkshop/scramjet-controller": "https://github.com/MercuryWorkshop/scramjet/releases/download/v2.0.67-alpha.1/mercuryworkshop-scramjet-controller-0.0.13.tgz",
 		"@mercuryworkshop/wisp-js": "^0.4.1",
+		"ajv": "^8.18.0",
 		"fastify": "^5.4.0",
 		"ws": "^8.18.3"
 	},

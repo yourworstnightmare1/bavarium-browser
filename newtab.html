@@ -48,6 +48,80 @@
       min-height: 100vh;
       min-height: 100dvh;
     }
+    .homepage-clock {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 30;
+      line-height: 1.35;
+      pointer-events: none;
+      user-select: none;
+    }
+    .homepage-clock.homepage-clock-hidden {
+      display: none;
+    }
+    .homepage-clock-date {
+      font-size: clamp(1.125rem, 2.2vw, 1.375rem);
+      font-weight: 600;
+      color: var(--text);
+    }
+    .homepage-clock-time {
+      margin-top: 2px;
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: 0.02em;
+      color: var(--muted);
+    }
+    body.has-custom-bg .homepage-clock {
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+    }
+    .homepage-weather {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 30;
+      text-align: right;
+      pointer-events: none;
+      user-select: none;
+      min-width: 72px;
+    }
+    .homepage-weather.homepage-weather-hidden {
+      display: none;
+    }
+    .homepage-weather-main {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .homepage-weather-icon {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      color: var(--text);
+    }
+    .homepage-weather-temp {
+      font-size: clamp(1.125rem, 2.2vw, 1.375rem);
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1;
+    }
+    .homepage-weather-label {
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    body.has-custom-bg .homepage-weather {
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+    }
+    @media (prefers-color-scheme: light) {
+      body.has-custom-bg .homepage-clock {
+        text-shadow: 0 1px 6px rgba(255, 255, 255, 0.65);
+      }
+      body.has-custom-bg .homepage-weather {
+        text-shadow: 0 1px 6px rgba(255, 255, 255, 0.65);
+      }
+    }
     .page {
       flex: 1 1 auto;
       display: flex;
@@ -317,6 +391,17 @@
   </style>
 </head>
 <body>
+  <div id="homepageClock" class="homepage-clock" aria-live="polite">
+    <div id="homepageClockDate" class="homepage-clock-date"></div>
+    <div id="homepageClockTime" class="homepage-clock-time"></div>
+  </div>
+  <div id="homepageWeather" class="homepage-weather homepage-weather-hidden" aria-live="polite">
+    <div class="homepage-weather-main">
+      <svg id="homepageWeatherIcon" class="homepage-weather-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
+      <span id="homepageWeatherTemp" class="homepage-weather-temp"></span>
+    </div>
+    <div id="homepageWeatherLabel" class="homepage-weather-label"></div>
+  </div>
   <main class="page">
     <div class="brand bavarium-brand">
       <img

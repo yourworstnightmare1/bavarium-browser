@@ -32,6 +32,18 @@ body {
 	width: 100vw;
 	height: 100vh;
 	background-color: #111;
+	z-index: 1;
+}
+
+body.sj-active .logo-wrapper,
+body.sj-active .desc,
+body.sj-active #sj-form,
+body.sj-active footer {
+	display: none !important;
+}
+
+body.sj-active #sj-frame {
+	display: block !important;
 }
 
 #sj-error {
