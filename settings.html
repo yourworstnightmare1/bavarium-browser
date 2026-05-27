@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; connect-src 'self' https: http:; object-src 'none'; base-uri 'self'; form-action 'self';" />
   <title>Settings</title>
+  <link rel="stylesheet" href="brand.css" />
   <style>
     * { box-sizing: border-box; }
     body {
@@ -79,6 +80,13 @@
       opacity: 0.95;
     }
     .nav-item.active .nav-item-icon {
+      filter: invert(0.72) sepia(0.4) saturate(2.8) hue-rotate(186deg) brightness(1.12);
+    }
+    /* Full-color app icon — silhouette to match monochrome nav icons */
+    .nav-item-icon.nav-app-icon {
+      filter: brightness(0) invert(1) brightness(1.05);
+    }
+    .nav-item.active .nav-item-icon.nav-app-icon {
       filter: invert(0.72) sepia(0.4) saturate(2.8) hue-rotate(186deg) brightness(1.12);
     }
     .nav-item-label {
@@ -307,36 +315,15 @@
       display: block;
     }
     .about-brand {
-      display: flex;
-      align-items: center;
       gap: 16px;
       margin: 0 0 16px;
-      user-select: none;
     }
-    .about-brand-logo {
+    .about-brand .bavarium-brand-logo {
       width: 72px;
       height: 72px;
-      border-radius: 18px;
-      flex-shrink: 0;
-      object-fit: contain;
     }
-    .about-brand-text {
-      margin: 0;
+    .about-brand .bavarium-brand-text {
       font-size: 2.4rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      line-height: 1.1;
-      background: linear-gradient(
-        125deg,
-        #00796b 0%,
-        #00c853 38%,
-        #00e676 72%,
-        #69f0ae 100%
-      );
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-      -webkit-text-fill-color: transparent;
     }
     .about-tagline {
       margin: 0 0 28px;
@@ -587,6 +574,22 @@
     .license-cross-links a {
       color: #8ab4f8;
     }
+    .settings-subsection {
+      margin: 28px 0 0;
+      padding-top: 20px;
+      border-top: 1px solid #3c4043;
+    }
+    .settings-subsection:first-of-type {
+      margin-top: 8px;
+      padding-top: 0;
+      border-top: none;
+    }
+    .settings-subsection h3 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 500;
+      color: #e8eaed;
+    }
   </style>
 </head>
 <body>
@@ -610,8 +613,12 @@
         <img class="nav-item-icon" src="assets/menu-icons/downloads.png" width="18" height="18" alt="" aria-hidden="true" />
         <span class="nav-item-label">Downloads</span>
       </button>
+      <button type="button" class="nav-item" data-hash="personalization">
+        <img class="nav-item-icon" src="assets/settings-icons/browsing.png" width="18" height="18" alt="" aria-hidden="true" />
+        <span class="nav-item-label">Personalization</span>
+      </button>
       <button type="button" class="nav-item" data-hash="about">
-        <img class="nav-item-icon" src="build/icon.png" width="18" height="18" alt="" aria-hidden="true" />
+        <img class="nav-item-icon nav-app-icon" src="build/icon.png" width="18" height="18" alt="" aria-hidden="true" />
         <span class="nav-item-label">About browser</span>
       </button>
       <button type="button" class="nav-item" data-hash="developer">
@@ -767,6 +774,46 @@
       </div>
     </section>
 
+    <section id="section-personalization" class="section">
+      <h2>Personalization</h2>
+      <p class="section-desc">Customize the bookmark bar and Bavarium homepage appearance.</p>
+
+      <div class="settings-subsection">
+        <h3>Bookmarks</h3>
+        <div class="field">
+          <label class="checkbox">
+            <input type="checkbox" id="hideBookmarkBarExceptHomepage" />
+            Hide bookmark bar on pages that aren't the homepage
+          </label>
+          <p class="field-hint">
+            The bookmark bar will be hidden on pages or sites outside of your selected homepage.
+          </p>
+        </div>
+      </div>
+
+      <div class="settings-subsection">
+        <h3>Bavarium Homepage</h3>
+        <div class="field">
+          <label>Custom background</label>
+          <div class="row" style="margin-bottom:8px;">
+            <button type="button" class="btn secondary" id="pickHomepageBackgroundBtn">Choose image…</button>
+            <button type="button" class="btn secondary" id="clearHomepageBackgroundBtn">Remove</button>
+          </div>
+          <p id="homepageBackgroundPath" class="path-display">No custom background set.</p>
+          <p class="field-hint">Applies when your homepage / new tab is set to Bavarium in Browsing/Searching.</p>
+        </div>
+        <div class="field">
+          <label class="checkbox">
+            <input type="checkbox" id="homepageShowTiles" checked />
+            Show favorite and recent websites
+          </label>
+          <p class="field-hint">
+            Hides the shortcuts under the homepage search bar. Favorites stay saved for when you turn this back on, unless you delete all browser data.
+          </p>
+        </div>
+      </div>
+    </section>
+
     <section id="section-privacy" class="section">
       <h2>History/Privacy</h2>
       <p class="section-desc">Control whether visits are remembered, manage site permissions (location, notifications, camera, and more), and review saved history.</p>
@@ -916,16 +963,16 @@
     </section>
 
     <section id="section-about" class="section">
-      <div class="about-brand" aria-hidden="false">
+      <div class="about-brand bavarium-brand" aria-hidden="false">
         <img
-          class="about-brand-logo"
+          class="bavarium-brand-logo"
           src="build/icon.png"
           width="72"
           height="72"
           alt=""
           decoding="async"
         />
-        <h2 class="about-brand-text">Bavarium</h2>
+        <h2 class="bavarium-brand-text">Bavarium</h2>
       </div>
       <p class="about-tagline"><strong>The ultimate unrestricted browser environment</strong></p>
 
@@ -1019,6 +1066,36 @@
         <p class="field-hint">Checks npm for newer versions of Electron, electron-builder, and other dependencies in this project (requires npm on your PATH).</p>
         <button type="button" class="btn secondary" id="checkFrameworkUpdatesBtn">Check for framework updates</button>
         <div id="frameworkUpdateResults" aria-live="polite"></div>
+      </div>
+
+      <div class="field">
+        <label>Homepage footer</label>
+        <label class="checkbox">
+          <input type="checkbox" id="homepageShowVersionInfo" checked />
+          Show Bavarium version info on homepage
+        </label>
+        <p class="field-hint">Displays the product name and package version in the Bavarium homepage footer.</p>
+        <label class="checkbox" style="margin-top:10px;">
+          <input type="checkbox" id="homepageShowSystemInfo" checked />
+          Show system info on homepage
+        </label>
+        <p class="field-hint">Displays the current system info in the Bavarium homepage footer.</p>
+        <label class="checkbox" style="margin-top:10px;">
+          <input type="checkbox" id="homepageShowProxyPort" checked />
+          Show active proxy port on homepage
+        </label>
+        <p class="field-hint">Displays the local port of the hosted proxy in the Bavarium homepage footer.</p>
+      </div>
+
+      <div class="field">
+        <label class="checkbox">
+          <input type="checkbox" id="showDevToolsOnScreenOverlay" />
+          Show DevTools warnings and errors on screen
+        </label>
+        <p class="field-hint" id="devToolsOverlayHint">
+          Shows developer warnings and errors over tabs as on-screen text. You can also open the Console with
+          <kbd id="devToolsShortcutKbd">Ctrl+Shift+I</kbd> via Inspect Element.
+        </p>
       </div>
 
       <div class="field">

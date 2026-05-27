@@ -16,6 +16,13 @@ let suggestIndex = -1;
 let suggestItems = [];
 let editingFavoriteId = null;
 let favorites = [];
+let newtabSettings = {
+  homepageShowTiles: true,
+  homepageShowVersionInfo: true,
+  homepageShowSystemInfo: true,
+  homepageShowProxyPort: true,
+  homepageCustomBackgroundUrl: "",
+};
 
 const searchInput = document.getElementById("searchInput");
 const suggestList = document.getElementById("suggestList");
@@ -105,18 +112,64 @@ async function loadSettings() {
   try {
     const s = await ipcRenderer.invoke("get-settings");
     if (s && s.searchEngine) searchEngine = s.searchEngine;
+    newtabSettings.homepageShowTiles = s.homepageShowTiles !== false;
+    newtabSettings.homepageShowVersionInfo = s.homepageShowVersionInfo !== false;
+    newtabSettings.homepageShowSystemInfo = s.homepageShowSystemInfo !== false;
+    newtabSettings.homepageShowProxyPort = s.homepageShowProxyPort !== false;
   } catch (_) {}
+  try {
+    const bg = await ipcRenderer.invoke("get-homepage-background-url");
+    newtabSettings.homepageCustomBackgroundUrl =
+      typeof bg === "string" ? bg : "";
+  } catch (_) {
+    newtabSettings.homepageCustomBackgroundUrl = "";
+  }
+}
+
+function applyNewtabAppearance() {
+  const showTiles = newtabSettings.homepageShowTiles !== false;
+  if (tileGrid) {
+    tileGrid.classList.toggle("tiles-hidden", !showTiles);
+  }
+  const bgUrl = newtabSettings.homepageCustomBackgroundUrl || "";
+  if (bgUrl) {
+    document.body.classList.add("has-custom-bg");
+    document.body.style.backgroundImage = `url("${bgUrl.replace(/"/g, '\\"')}")`;
+  } else {
+    document.body.classList.remove("has-custom-bg");
+    document.body.style.backgroundImage = "";
+  }
 }
 
 function formatFooterStatusLine(info) {
   if (!info || typeof info !== "object") {
     return "Bavarium Browser | Service Inactive";
   }
-  const name = info.appName || "Bavarium Browser";
-  const version = info.version ? ` ${info.version}` : "";
-  const platform = info.platform ? ` ${info.platform}` : "";
+  const showVersion =
+    info.showVersionInfo !== false &&
+    newtabSettings.homepageShowVersionInfo !== false;
+  const showSystem =
+    info.showSystemInfo !== false &&
+    newtabSettings.homepageShowSystemInfo !== false;
+  const showProxy =
+    info.showProxyPort !== false && newtabSettings.homepageShowProxyPort !== false;
+
+  const left = [];
+  if (showVersion) {
+    const name = info.appName || "Bavarium Browser";
+    const version = info.version ? ` ${info.version}` : "";
+    left.push(`${name}${version}`.trim());
+  }
+  if (showSystem && info.platform) {
+    left.push(info.platform);
+  }
+  const leftStr = left.join(" ").trim();
   const proxy = info.proxyLabel || "Service Inactive";
-  return `${name}${version}${platform} | ${proxy}`;
+  let text = "";
+  if (showProxy && leftStr) text = `${leftStr} | ${proxy}`;
+  else if (showProxy) text = proxy;
+  else text = leftStr;
+  return text || "";
 }
 
 function openExternalUrl(url) {
@@ -130,11 +183,33 @@ footerGithub.addEventListener("click", (e) => {
 
 async function loadFooterStatus() {
   footerGithub.href = GITHUB_REPO;
+  const footer = document.querySelector(".footer");
   try {
     const info = await ipcRenderer.invoke("get-newtab-footer-info");
-    footerVersion.textContent = formatFooterStatusLine(info);
+    if (info && typeof info === "object") {
+      if (info.homepageShowTiles !== undefined) {
+        newtabSettings.homepageShowTiles = info.homepageShowTiles !== false;
+      }
+      if (info.homepageCustomBackgroundUrl) {
+        newtabSettings.homepageCustomBackgroundUrl = info.homepageCustomBackgroundUrl;
+      }
+      if (info.showVersionInfo !== undefined) {
+        newtabSettings.homepageShowVersionInfo = info.showVersionInfo !== false;
+      }
+      if (info.showSystemInfo !== undefined) {
+        newtabSettings.homepageShowSystemInfo = info.showSystemInfo !== false;
+      }
+      if (info.showProxyPort !== undefined) {
+        newtabSettings.homepageShowProxyPort = info.showProxyPort !== false;
+      }
+    }
+    applyNewtabAppearance();
+    const line = formatFooterStatusLine(info);
+    footerVersion.textContent = line;
+    if (footer) footer.classList.toggle("footer-hidden", !line);
   } catch {
     footerVersion.textContent = "Bavarium Browser | Service Inactive";
+    if (footer) footer.classList.remove("footer-hidden");
   }
 }
 
@@ -293,6 +368,10 @@ function renderTiles(entries) {
 }
 
 async function refreshTiles() {
+  if (newtabSettings.homepageShowTiles === false) {
+    if (tileGrid) tileGrid.innerHTML = "";
+    return;
+  }
   await loadFavorites();
   const entries = await buildTileEntries();
   renderTiles(entries);
@@ -498,9 +577,17 @@ document.addEventListener("keydown", (e) => {
 });
 
 ipcRenderer.on("settings-updated", () => {
-  void loadSettings();
-  void loadFooterStatus();
+  void refreshNewtabFromSettings();
 });
+
+async function refreshNewtabFromSettings() {
+  await loadSettings();
+  applyNewtabAppearance();
+  await loadFooterStatus();
+  await refreshTiles();
+}
+
+window.__bavariumRefreshNewtab = refreshNewtabFromSettings;
 
 ipcRenderer.on("proxy-port-state", () => {
   void loadFooterStatus();
@@ -512,6 +599,7 @@ ipcRenderer.on("browser-data-cleared", () => {
 
 void (async () => {
   await loadSettings();
+  applyNewtabAppearance();
   await loadFooterStatus();
   startFooterStatusPoll();
   await refreshTiles();

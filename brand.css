@@ -1,0 +1,84 @@
+/* Shared Bavarium logo + animated gradient wordmark */
+.bavarium-brand {
+  display: flex;
+  align-items: center;
+  user-select: none;
+}
+
+.bavarium-brand-logo {
+  border-radius: 18px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+/* Scoped vars so page :root styles cannot override the wordmark */
+.bavarium-brand-text {
+  /* Teal / blue-green (original) */
+  --bavarium-wm-teal-deep: #004d40;
+  --bavarium-wm-teal: #00695c;
+  --bavarium-wm-teal-mid: #00897b;
+  --bavarium-wm-teal-bright: #00796b;
+  /* Green */
+  --bavarium-wm-green-deep: #1b5e20;
+  --bavarium-wm-green: #2e7d32;
+  --bavarium-wm-green-mid: #43a047;
+  --bavarium-wm-green-bright: #00c853;
+
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  background: linear-gradient(
+    90deg,
+    var(--bavarium-wm-teal-deep) 0%,
+    var(--bavarium-wm-teal) 12.5%,
+    var(--bavarium-wm-teal-mid) 25%,
+    var(--bavarium-wm-green-deep) 37.5%,
+    var(--bavarium-wm-green-bright) 50%,
+    var(--bavarium-wm-green-mid) 62.5%,
+    var(--bavarium-wm-teal-bright) 75%,
+    var(--bavarium-wm-green) 87.5%,
+    var(--bavarium-wm-teal-deep) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: bavarium-brand-gradient-shift 4s linear infinite;
+}
+
+@media (prefers-color-scheme: light) {
+  .bavarium-brand-text {
+    --bavarium-wm-teal-deep: #004d40;
+    --bavarium-wm-teal: #00695c;
+    --bavarium-wm-teal-mid: #00897b;
+    --bavarium-wm-teal-bright: #00796b;
+    --bavarium-wm-green-deep: #1b5e20;
+    --bavarium-wm-green: #388e3c;
+    --bavarium-wm-green-mid: #4caf50;
+    --bavarium-wm-green-bright: #00a152;
+  }
+}
+
+/* Dark UI shells (splash, settings about) */
+#startupSplash .bavarium-brand-text,
+.about-brand .bavarium-brand-text {
+  --bavarium-wm-teal-deep: #004d40;
+  --bavarium-wm-teal: #00695c;
+  --bavarium-wm-teal-mid: #00897b;
+  --bavarium-wm-teal-bright: #00796b;
+  --bavarium-wm-green-deep: #1b5e20;
+  --bavarium-wm-green: #2e7d32;
+  --bavarium-wm-green-mid: #43a047;
+  --bavarium-wm-green-bright: #00c853;
+}
+
+@keyframes bavarium-brand-gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}

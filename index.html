@@ -3,6 +3,7 @@
 <head>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none';" />
   <title>Bavarium Browser</title>
+  <link rel="stylesheet" href="brand.css" />
   <style>
     html, body {
       margin: 0;
@@ -747,8 +748,46 @@
       border-bottom: 1px solid #3c4043;
       min-height: 34px;
     }
-    #bookmarkbar.bookmarkbar-empty {
+    #bookmarkbar.bookmarkbar-empty,
+    #bookmarkbar.bookmarkbar-home-hidden {
       display: none;
+    }
+    #devConsoleOverlay {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      z-index: 100000;
+      max-width: min(520px, calc(100vw - 24px));
+      max-height: 40vh;
+      overflow: auto;
+      pointer-events: none;
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    #devConsoleOverlay[hidden] {
+      display: none !important;
+    }
+    #devConsoleOverlay .dev-console-line {
+      margin: 0 0 6px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: rgba(32, 33, 36, 0.92);
+      border: 1px solid #5f6368;
+      color: #e8eaed;
+      word-break: break-word;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    }
+    #devConsoleOverlay .dev-console-warn {
+      border-color: #f9ab00;
+      color: #fdd663;
+    }
+    #devConsoleOverlay .dev-console-error {
+      border-color: #ea4335;
+      color: #f28b82;
+    }
+    body.devtools-open #devConsoleOverlay {
+      bottom: 48%;
     }
     #bookmarkbarItems {
       display: flex;
@@ -1075,7 +1114,7 @@
       position: fixed;
       right: 12px;
       bottom: 12px;
-      z-index: 2500;
+      z-index: 100001;
       width: 220px;
       padding: 8px 10px 10px;
       border-radius: 10px;
@@ -1089,6 +1128,67 @@
     }
     #perfOverlay[hidden] {
       display: none !important;
+    }
+
+    #startupSplash {
+      position: fixed;
+      inset: 0;
+      z-index: 20000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: #131314;
+      color: #e8eaed;
+      transition: opacity 0.28s ease, visibility 0.28s ease;
+    }
+    #startupSplash[hidden] {
+      display: none !important;
+    }
+    #startupSplash.splash-fade-out {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #startupSplash .splash-brand {
+      justify-content: center;
+      gap: 16px;
+    }
+    #startupSplash .splash-brand .bavarium-brand-logo {
+      width: clamp(52px, 11vw, 76px);
+      height: clamp(52px, 11vw, 76px);
+    }
+    #startupSplash .splash-brand .bavarium-brand-text {
+      font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+      font-size: clamp(2.2rem, 7vw, 3.2rem);
+    }
+    #startupSplash .splash-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(232, 234, 237, 0.15);
+      border-top-color: #69f0ae;
+      border-radius: 50%;
+      animation: splash-spin 0.85s linear infinite;
+    }
+    #startupSplash .splash-status {
+      margin: 0;
+      font-size: 14px;
+      color: #9aa0a6;
+      text-align: center;
+      max-width: min(90vw, 420px);
+      line-height: 1.45;
+    }
+    @keyframes splash-spin {
+      to { transform: rotate(360deg); }
+    }
+    body.startup-loading #tabs,
+    body.startup-loading #controls,
+    body.startup-loading #bookmarkbar,
+    body.startup-loading #findBar,
+    body.startup-loading #views,
+    body.startup-loading #devtoolsHost {
+      visibility: hidden;
     }
     body.devtools-open #perfOverlay {
       bottom: 12px;
@@ -1143,7 +1243,23 @@
     }
   </style>
 </head>
-<body>
+<body class="startup-loading">
+
+<div id="startupSplash" role="status" aria-live="polite" aria-busy="true">
+  <div class="splash-brand bavarium-brand">
+    <img
+      class="bavarium-brand-logo"
+      src="build/icon.png"
+      width="76"
+      height="76"
+      alt=""
+      decoding="async"
+    />
+    <h1 class="bavarium-brand-text">Bavarium</h1>
+  </div>
+  <div class="splash-spinner" aria-hidden="true"></div>
+  <p class="splash-status" id="startupSplashStatus">Starting Bavarium…</p>
+</div>
 
 <div id="tabs"></div>
 
@@ -1263,7 +1379,7 @@
     </div>
   </div>
 
-  <button type="button" id="btnToolbarMenu" class="toolbar-icon-btn" onclick="toggleMenu()" title="Menu" aria-label="Open menu" aria-haspopup="true" style="position:relative; z-index:10;">
+  <button type="button" id="btnToolbarMenu" class="toolbar-icon-btn" title="Menu" aria-label="Open menu" aria-haspopup="true" aria-expanded="false" aria-controls="menu" style="position:relative; z-index:10;">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <circle cx="12" cy="5" r="1.5" fill="currentColor"/>
       <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
@@ -1357,6 +1473,17 @@
   </div>
 </div>
 
+<div id="pageColumn">
+  <div id="views"></div>
+  <webview
+    id="devtoolsHost"
+    partition="persist:bavarium-devtools"
+    webpreferences="contextIsolation=yes,sandbox=yes"
+  ></webview>
+</div>
+
+<div id="devConsoleOverlay" hidden aria-live="polite" aria-label="Developer console messages"></div>
+
 <div id="perfOverlay" hidden aria-hidden="true">
   <div class="perf-title">Performance</div>
   <div class="perf-row">
@@ -1374,15 +1501,6 @@
     <canvas id="perfCanvasNet" width="72" height="22" aria-hidden="true"></canvas>
     <span id="perfNetLabel">↓ —  ↑ —</span>
   </div>
-</div>
-
-<div id="pageColumn">
-  <div id="views"></div>
-  <webview
-    id="devtoolsHost"
-    partition="persist:bavarium-devtools"
-    webpreferences="contextIsolation=yes,sandbox=yes"
-  ></webview>
 </div>
 
 <script src="renderer.js"></script>

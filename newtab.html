@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: http:; object-src 'none'; base-uri 'self'; form-action 'self';" />
   <title>Bavarium</title>
+  <link rel="stylesheet" href="brand.css" />
   <style>
     :root {
       color-scheme: light dark;
@@ -16,10 +17,6 @@
       --border: #dadce0;
       --accent-a: #4fc3f7;
       --accent-b: #26c6a0;
-      --brand-green-deep: #00796b;
-      --brand-green: #00c853;
-      --brand-green-bright: #00e676;
-      --brand-green-light: #69f0ae;
       --shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
       --tile-hover: rgba(0, 200, 83, 0.14);
     }
@@ -30,10 +27,6 @@
         --text: #e8eaed;
         --muted: #9aa0a6;
         --border: #3c4043;
-        --brand-green-deep: #00e676;
-        --brand-green: #69f0ae;
-        --brand-green-bright: #b9f6ca;
-        --brand-green-light: #ccff90;
         --shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
         --tile-hover: rgba(0, 230, 118, 0.18);
       }
@@ -68,38 +61,17 @@
       min-height: 0;
     }
     .brand {
-      display: flex;
-      align-items: center;
       justify-content: center;
       gap: 16px;
       margin: 0 0 28px;
-      user-select: none;
     }
-    .brand-logo {
+    .brand .bavarium-brand-logo {
       width: clamp(52px, 11vw, 76px);
       height: clamp(52px, 11vw, 76px);
-      border-radius: 18px;
-      flex-shrink: 0;
-      object-fit: contain;
     }
-    .brand-text {
-      margin: 0;
+    .brand .bavarium-brand-text {
       font-family: inherit;
       font-size: clamp(2.2rem, 7vw, 3.2rem);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      line-height: 1.1;
-      background: linear-gradient(
-        125deg,
-        var(--brand-green-deep) 0%,
-        var(--brand-green) 38%,
-        var(--brand-green-bright) 72%,
-        var(--brand-green-light) 100%
-      );
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-      -webkit-text-fill-color: transparent;
     }
     .search-wrap {
       width: min(100%, 560px);
@@ -252,6 +224,31 @@
     }
     .footer-github:hover { color: var(--text); }
     .footer-github img { width: 18px; height: 18px; opacity: 0.9; }
+    body.has-custom-bg {
+      background-color: var(--bg);
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      background-attachment: fixed;
+    }
+    body.has-custom-bg .page {
+      background: rgba(0, 0, 0, 0.45);
+      border-radius: 16px;
+      margin-top: 12px;
+      margin-bottom: 12px;
+      padding-top: 36px;
+    }
+    @media (prefers-color-scheme: light) {
+      body.has-custom-bg .page {
+        background: rgba(255, 255, 255, 0.72);
+      }
+    }
+    #tileGrid.tiles-hidden {
+      display: none !important;
+    }
+    .footer.footer-hidden {
+      display: none !important;
+    }
     #favoriteModal {
       display: none;
       position: fixed;
@@ -321,16 +318,16 @@
 </head>
 <body>
   <main class="page">
-    <div class="brand">
+    <div class="brand bavarium-brand">
       <img
-        class="brand-logo"
+        class="bavarium-brand-logo"
         src="build/icon.png"
         width="76"
         height="76"
         alt=""
         decoding="async"
       />
-      <h1 class="brand-text">Bavarium</h1>
+      <h1 class="bavarium-brand-text">Bavarium</h1>
     </div>
     <div class="search-wrap">
       <input

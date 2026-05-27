@@ -262,6 +262,12 @@ function installAutoApplySettings() {
     "enablePerformanceGraph",
     "fpsLimitEnabled",
     "fpsSyncDisplay",
+    "hideBookmarkBarExceptHomepage",
+    "homepageShowTiles",
+    "homepageShowVersionInfo",
+    "homepageShowSystemInfo",
+    "homepageShowProxyPort",
+    "showDevToolsOnScreenOverlay",
   ].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -297,6 +303,7 @@ const HASH_TO_NAV = {
   history: "privacy",
   privacy: "privacy",
   downloads: "downloads",
+  personalization: "personalization",
   about: "about",
   developer: "developer",
 };
@@ -649,6 +656,28 @@ function applySettingsToForm() {
   void refreshFpsDisplayHint();
   syncProxyFieldsVisibility();
   syncAboutPrereleaseUi();
+  const hideBm = document.getElementById("hideBookmarkBarExceptHomepage");
+  if (hideBm) hideBm.checked = s.hideBookmarkBarExceptHomepage === true;
+  const showTiles = document.getElementById("homepageShowTiles");
+  if (showTiles) showTiles.checked = s.homepageShowTiles !== false;
+  syncHomepageBackgroundPathUi(s.homepageCustomBackground || "");
+  const showVer = document.getElementById("homepageShowVersionInfo");
+  if (showVer) showVer.checked = s.homepageShowVersionInfo !== false;
+  const showSys = document.getElementById("homepageShowSystemInfo");
+  if (showSys) showSys.checked = s.homepageShowSystemInfo !== false;
+  const showProxy = document.getElementById("homepageShowProxyPort");
+  if (showProxy) showProxy.checked = s.homepageShowProxyPort !== false;
+  const devOverlay = document.getElementById("showDevToolsOnScreenOverlay");
+  if (devOverlay) devOverlay.checked = s.showDevToolsOnScreenOverlay === true;
+}
+
+function syncHomepageBackgroundPathUi(stored) {
+  const el = document.getElementById("homepageBackgroundPath");
+  if (!el) return;
+  const name = stored ? path.basename(stored) : "";
+  el.textContent = name
+    ? `Using: ${name}`
+    : "No custom background set.";
 }
 
 function collectSettingsFromForm() {
@@ -679,6 +708,21 @@ function collectSettingsFromForm() {
     fpsLimit: clampFpsLimitValue(
       parseInt(document.getElementById("fpsLimit")?.value || "60", 10)
     ),
+    hideBookmarkBarExceptHomepage: !!document.getElementById(
+      "hideBookmarkBarExceptHomepage"
+    )?.checked,
+    homepageCustomBackground: currentSettings.homepageCustomBackground || "",
+    homepageShowTiles:
+      document.getElementById("homepageShowTiles")?.checked !== false,
+    homepageShowVersionInfo:
+      document.getElementById("homepageShowVersionInfo")?.checked !== false,
+    homepageShowSystemInfo:
+      document.getElementById("homepageShowSystemInfo")?.checked !== false,
+    homepageShowProxyPort:
+      document.getElementById("homepageShowProxyPort")?.checked !== false,
+    showDevToolsOnScreenOverlay: !!document.getElementById(
+      "showDevToolsOnScreenOverlay"
+    )?.checked,
   };
 }
 
@@ -1289,6 +1333,40 @@ window.addEventListener("DOMContentLoaded", async () => {
       void runBrowserUpdateCheck({ prerelease: false });
     });
   }
+  const pickBgBtn = document.getElementById("pickHomepageBackgroundBtn");
+  if (pickBgBtn) {
+    pickBgBtn.addEventListener("click", async () => {
+      try {
+        const picked = await ipcRenderer.invoke("pick-homepage-background");
+        if (!picked) return;
+        currentSettings.homepageCustomBackground = picked;
+        syncHomepageBackgroundPathUi(picked);
+        scheduleApplySettings({ silent: true });
+      } catch (e) {
+        console.warn("pick-homepage-background:", e);
+      }
+    });
+  }
+  const clearBgBtn = document.getElementById("clearHomepageBackgroundBtn");
+  if (clearBgBtn) {
+    clearBgBtn.addEventListener("click", async () => {
+      try {
+        await ipcRenderer.invoke("clear-homepage-background");
+        currentSettings.homepageCustomBackground = "";
+        syncHomepageBackgroundPathUi("");
+        scheduleApplySettings({ silent: true });
+      } catch (e) {
+        console.warn("clear-homepage-background:", e);
+      }
+    });
+  }
+
+  try {
+    const shortcut = await ipcRenderer.invoke("get-devtools-shortcut-label");
+    const kbd = document.getElementById("devToolsShortcutKbd");
+    if (kbd && shortcut) kbd.textContent = shortcut;
+  } catch (_) {}
+
   const checkPreBtn = document.getElementById("checkPrereleaseBuildsBtn");
   if (checkPreBtn) {
     checkPreBtn.addEventListener("click", () => {

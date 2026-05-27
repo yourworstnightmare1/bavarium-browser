@@ -14,6 +14,7 @@ const {
   screen,
 } = require('electron');
 const os = require('os');
+const { pathToFileURL } = require('url');
 
 const APP_DISPLAY_NAME = 'Bavarium Browser';
 app.setName(APP_DISPLAY_NAME);
@@ -760,6 +761,7 @@ function createWindow() {
   attachWindowQuitGuard(win);
   setupHoldAltMenuBar(win);
   win.webContents.once('did-finish-load', () => {
+    sendProxyStartupStateToWindow(win);
     if (pendingBavariumLaunchUrl) {
       dispatchBavariumProtocolUrl(pendingBavariumLaunchUrl);
       pendingBavariumLaunchUrl = null;
@@ -977,6 +979,52 @@ function proxyChildIsRunning() {
   return !!(currentProxyProcess && currentProxyProcess.exitCode == null);
 }
 
+function getProxyStartupState() {
+  const settings = mergedSettingsFromDisk();
+  if (settings.proxyEnabled === false) {
+    return {
+      proxyEnabled: false,
+      status: 'disabled',
+      ready: true,
+      message: 'Proxy is disabled.',
+    };
+  }
+  const proxyType = normalizeProxyTypeFromDisk(settings.proxyType || 'ultraviolet');
+  const label = proxyType === 'scramjet' ? 'Scramjet' : 'Ultraviolet';
+  if (proxyChildIsRunning() && currentProxyListenPort != null) {
+    return {
+      proxyEnabled: true,
+      status: 'running',
+      ready: true,
+      proxyType,
+      port: currentProxyListenPort,
+      message: `${label} proxy is ready.`,
+    };
+  }
+  return {
+    proxyEnabled: true,
+    status: 'starting',
+    ready: false,
+    proxyType,
+    message: `Starting ${label} proxy…`,
+  };
+}
+
+function sendProxyStartupStateToWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  const state = getProxyStartupState();
+  try {
+    win.webContents.send('proxy-port-state', {
+      status: state.status === 'disabled' ? 'disabled' : state.status,
+      proxyType: state.proxyType,
+      port: state.port,
+      message: state.message,
+      ready: state.ready,
+      settings: mergedSettingsFromDisk(),
+    });
+  } catch (_) {}
+}
+
 function defaultPortForProxyType(proxyType) {
   return proxyType === 'scramjet' ? 3000 : 8080;
 }
@@ -1136,6 +1184,7 @@ async function spawnProxyOnPort(proxyType, port, options = {}) {
       proxyType,
       port,
       message: `Port ${preferredPort} was in use; proxy is running on ${port}.`,
+      ready: true,
     });
   } else {
     broadcastProxyPortState({
@@ -1143,6 +1192,7 @@ async function spawnProxyOnPort(proxyType, port, options = {}) {
       proxyType,
       port,
       message: `Proxy listening on port ${port}.`,
+      ready: true,
     });
   }
 
@@ -1346,7 +1396,99 @@ function mergedSettingsFromDisk() {
     fpsLimitEnabled: s.fpsLimitEnabled === true,
     fpsLimit: normalizeFpsLimitValue(s.fpsLimit),
     fpsSyncDisplay: s.fpsSyncDisplay !== false,
+    hideBookmarkBarExceptHomepage: s.hideBookmarkBarExceptHomepage === true,
+    homepageCustomBackground: String(s.homepageCustomBackground || '').trim(),
+    homepageShowTiles: s.homepageShowTiles !== false,
+    homepageShowVersionInfo: s.homepageShowVersionInfo !== false,
+    homepageShowSystemInfo: s.homepageShowSystemInfo !== false,
+    homepageShowProxyPort: s.homepageShowProxyPort !== false,
+    showDevToolsOnScreenOverlay: s.showDevToolsOnScreenOverlay === true,
   };
+}
+
+const HOMEPAGE_BACKGROUND_BASENAME = 'homepage-background';
+
+function homepageBackgroundFilePath(stored) {
+  const key = String(stored || '').trim();
+  if (!key) return '';
+  if (path.isAbsolute(key)) return key;
+  if (key === HOMEPAGE_BACKGROUND_BASENAME) {
+    const dir = app.getPath('userData');
+    const entries = fs.readdirSync(dir);
+    const match = entries.find((name) =>
+      name.startsWith(`${HOMEPAGE_BACKGROUND_BASENAME}.`)
+    );
+    return match ? path.join(dir, match) : '';
+  }
+  return path.join(app.getPath('userData'), key);
+}
+
+function homepageBackgroundFileUrl(stored) {
+  const full = homepageBackgroundFilePath(stored);
+  if (!full || !fs.existsSync(full)) return '';
+  return pathToFileURL(full).href;
+}
+
+function getDevToolsShortcutLabel() {
+  if (process.platform === 'darwin') return 'Cmd+Option+I';
+  return 'Ctrl+Shift+I';
+}
+
+function parseGuestConsoleMessageArgs(args) {
+  for (const candidate of args) {
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      typeof candidate.message === 'string'
+    ) {
+      return {
+        level: candidate.level,
+        message: candidate.message,
+        lineNumber: candidate.lineNumber ?? candidate.line,
+        sourceId: candidate.sourceId,
+      };
+    }
+  }
+  if (args.length >= 3 && typeof args[2] === 'string') {
+    return {
+      level: args[1],
+      message: args[2],
+      lineNumber: args[3],
+      sourceId: args[4],
+    };
+  }
+  return null;
+}
+
+function guestConsoleSeverity(level) {
+  if (typeof level === 'number') {
+    if (level >= 3) return 'error';
+    if (level >= 2) return 'warn';
+    return null;
+  }
+  const s = String(level || '').toLowerCase();
+  if (s === 'error') return 'error';
+  if (s === 'warning' || s === 'warn') return 'warn';
+  return null;
+}
+
+function forwardGuestConsoleMessageToShell(wc, details) {
+  if (!details || !details.message) return;
+  if (mergedSettingsFromDisk().showDevToolsOnScreenOverlay !== true) return;
+  const severity = guestConsoleSeverity(details.level);
+  if (!severity) return;
+  const host = wc.hostWebContents;
+  if (!host || host.isDestroyed()) return;
+  let text = String(details.message);
+  if (details.lineNumber != null && details.sourceId) {
+    const src = String(details.sourceId);
+    const shortSrc = src.length > 72 ? `…${src.slice(-68)}` : src;
+    text = `${text} (${shortSrc}:${details.lineNumber})`;
+  }
+  host.send('bavarium-guest-console-message', {
+    message: text,
+    level: severity,
+  });
 }
 
 function normalizeFpsLimitValue(raw) {
@@ -1413,14 +1555,23 @@ function buildFrameCapInstallScript(cap) {
         clearInterval(window.__bavariumFpsLoopId);
         delete window.__bavariumFpsLoopId;
       }
-      if (window.__bavariumFpsOrigRaf) {
+      if (!window.__bavariumFpsOrigRaf) {
+        window.__bavariumFpsOrigRaf = window.requestAnimationFrame.bind(window);
+        window.__bavariumFpsOrigCancel = window.cancelAnimationFrame.bind(window);
+      }
+      var origRaf = window.__bavariumFpsOrigRaf;
+      var origCancel = window.__bavariumFpsOrigCancel;
+      if (window.__bavariumFpsOrigRaf && window.requestAnimationFrame !== window.__bavariumFpsOrigRaf) {
         window.requestAnimationFrame = window.__bavariumFpsOrigRaf;
         window.cancelAnimationFrame = window.__bavariumFpsOrigCancel;
-        delete window.__bavariumFpsOrigRaf;
-        delete window.__bavariumFpsOrigCancel;
       }
+      if (window.__bavariumFpsPassiveId != null) return;
       window.__bavariumFpsCapInstalled = 0;
-      window.__bavariumFpsCount = 0;
+      function tick() {
+        window.__bavariumFpsCount = (window.__bavariumFpsCount || 0) + 1;
+        window.__bavariumFpsPassiveId = origRaf(tick);
+      }
+      tick();
     })();`;
   }
   const fps = Math.round(cap);
@@ -1436,6 +1587,11 @@ function buildFrameCapInstallScript(cap) {
       window.__bavariumFpsOrigCancel = window.cancelAnimationFrame.bind(window);
     }
     var origRaf = window.__bavariumFpsOrigRaf;
+    var origCancel = window.__bavariumFpsOrigCancel;
+    if (window.__bavariumFpsPassiveId != null) {
+      origCancel(window.__bavariumFpsPassiveId);
+      delete window.__bavariumFpsPassiveId;
+    }
     var queue = [];
     var nextId = 1;
     window.requestAnimationFrame = function(cb) {
@@ -2351,6 +2507,10 @@ function registerGuestWebviewContextMenu() {
 
     if (wc.getType() !== 'webview') return;
     bindGuestWebviewShortcuts(wc);
+    wc.on('console-message', (...args) => {
+      const details = parseGuestConsoleMessageArgs(args);
+      if (details) forwardGuestConsoleMessageToShell(wc, details);
+    });
     const reinject = () => injectFrameRateCapOnWebContents(wc);
     reinject();
     wc.on('did-finish-load', reinject);
@@ -3267,6 +3427,11 @@ async function startSelectedProxy() {
   await delayMs(400);
 
   if (settings.proxyEnabled === false) {
+    broadcastProxyPortState({
+      status: 'disabled',
+      ready: true,
+      message: 'Proxy is disabled.',
+    });
     return null;
   }
 
@@ -3275,6 +3440,15 @@ async function startSelectedProxy() {
     proxyType === 'ultraviolet'
       ? settings.uvPort || '8080'
       : settings.scramjetPort || '3000';
+
+  const label = proxyType === 'scramjet' ? 'Scramjet' : 'Ultraviolet';
+  broadcastProxyPortState({
+    status: 'starting',
+    proxyType,
+    port: parseInt(String(preferred), 10) || defaultPortForProxyType(proxyType),
+    message: `Starting ${label} proxy…`,
+    ready: false,
+  });
 
   return startProxyWithResolvedPort(proxyType, preferred);
 }
@@ -3708,6 +3882,13 @@ function scheduleStartupUpdateCheck() {
   }, 2000);
 }
 
+ipcMain.on('bavarium-shell-ready', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) {
+    sendProxyStartupStateToWindow(win);
+  }
+});
+
 // Save settings
 ipcMain.on('save-settings', (event, settings) => {
   const settingsPath = path.join(app.getPath('userData'), 'settings.json');
@@ -3730,6 +3911,8 @@ ipcMain.on('save-settings', (event, settings) => {
 });
 
 ipcMain.handle('get-settings', () => mergedSettingsFromDisk());
+
+ipcMain.handle('get-proxy-startup-state', () => getProxyStartupState());
 
 ipcMain.handle('safe-browsing-check-url', async (_event, url) => {
   const hit = await checkSafeBrowsingForNavigation(url);
@@ -3879,10 +4062,68 @@ function getNewtabFooterInfo() {
     version,
     platform,
     proxyLabel,
+    showVersionInfo: settings.homepageShowVersionInfo !== false,
+    showSystemInfo: settings.homepageShowSystemInfo !== false,
+    showProxyPort: settings.homepageShowProxyPort !== false,
+    homepageCustomBackgroundUrl: homepageBackgroundFileUrl(
+      settings.homepageCustomBackground
+    ),
+    homepageShowTiles: settings.homepageShowTiles !== false,
   };
 }
 
 ipcMain.handle('get-newtab-footer-info', () => getNewtabFooterInfo());
+
+ipcMain.handle('get-devtools-shortcut-label', () => getDevToolsShortcutLabel());
+
+ipcMain.handle('get-homepage-background-url', () => {
+  const s = mergedSettingsFromDisk();
+  return homepageBackgroundFileUrl(s.homepageCustomBackground);
+});
+
+ipcMain.handle('pick-homepage-background', async () => {
+  const parent = dialogParentWindow();
+  if (!parent) return null;
+  const r = await dialog.showOpenDialog(parent, {
+    title: 'Choose homepage background',
+    properties: ['openFile'],
+    filters: [
+      {
+        name: 'Images',
+        extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'],
+      },
+    ],
+  });
+  if (r.canceled || !r.filePaths.length) return null;
+  const src = r.filePaths[0];
+  const ext = path.extname(src).toLowerCase() || '.png';
+  const userDir = app.getPath('userData');
+  try {
+    const existing = fs.readdirSync(userDir);
+    for (const name of existing) {
+      if (name.startsWith(`${HOMEPAGE_BACKGROUND_BASENAME}.`)) {
+        fs.unlinkSync(path.join(userDir, name));
+      }
+    }
+  } catch (_) {}
+  const destName = `${HOMEPAGE_BACKGROUND_BASENAME}${ext}`;
+  const dest = path.join(userDir, destName);
+  fs.copyFileSync(src, dest);
+  return destName;
+});
+
+ipcMain.handle('clear-homepage-background', () => {
+  const userDir = app.getPath('userData');
+  try {
+    const existing = fs.readdirSync(userDir);
+    for (const name of existing) {
+      if (name.startsWith(`${HOMEPAGE_BACKGROUND_BASENAME}.`)) {
+        fs.unlinkSync(path.join(userDir, name));
+      }
+    }
+  } catch (_) {}
+  return { ok: true };
+});
 
 ipcMain.handle('get-homepage-favorites', () => readHomepageFavoritesFile());
 

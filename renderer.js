@@ -14,6 +14,8 @@ let devtoolsHostWebContentsId = null;
 let devtoolsOpenForTabId = null;
 /** True while the user is editing the address bar (do not overwrite from webview sync). */
 let urlOmniboxUserEditing = false;
+let urlBarListenersInstalled = false;
+let toolbarMenuInstalled = false;
 /** Debounced UV shell hash updates per webview. */
 const uvShellNavByView = new WeakMap();
 
@@ -83,6 +85,119 @@ const BAVARIUM_SHELL_HTTP_LINK_PATCH = `(function() {
       require("electron").ipcRenderer.sendToHost("bavarium-open-external-url", abs);
     } catch (err2) {}
   }, true);
+})();`;
+
+/** Capture console/resource errors in the guest page and show a fixed on-page overlay. */
+const BAVARIUM_CONSOLE_OVERLAY_PATCH = `(function() {
+  if (window.__bavariumConsoleOverlayPatch) return;
+  window.__bavariumConsoleOverlayPatch = true;
+  var lines = [];
+  var MAX = 8;
+  function ensureStyle() {
+    if (document.getElementById("bavarium-dev-overlay-style")) return;
+    var style = document.createElement("style");
+    style.id = "bavarium-dev-overlay-style";
+    style.textContent = [
+      "#bavarium-dev-overlay {",
+      "position:fixed;left:12px;bottom:12px;z-index:2147483647;",
+      "max-width:min(520px,calc(100vw - 24px));max-height:40vh;overflow:auto;",
+      "pointer-events:none;font:12px/1.35 ui-monospace,Cascadia Mono,Consolas,monospace;",
+      "}",
+      "#bavarium-dev-overlay .bavarium-dev-line {",
+      "margin:0 0 6px;padding:8px 10px;border-radius:6px;",
+      "background:rgba(32,33,36,0.94);border:1px solid #5f6368;color:#e8eaed;",
+      "word-break:break-word;box-shadow:0 4px 16px rgba(0,0,0,0.35);",
+      "}",
+      "#bavarium-dev-overlay .bavarium-dev-warn { border-color:#f9ab00;color:#fdd663; }",
+      "#bavarium-dev-overlay .bavarium-dev-error { border-color:#ea4335;color:#f28b82; }",
+    ].join("");
+    (document.head || document.documentElement).appendChild(style);
+  }
+  function ensureBox() {
+    ensureStyle();
+    var el = document.getElementById("bavarium-dev-overlay");
+    if (el) return el;
+    el = document.createElement("div");
+    el.id = "bavarium-dev-overlay";
+    el.setAttribute("aria-live", "polite");
+    (document.body || document.documentElement).appendChild(el);
+    return el;
+  }
+  function render() {
+    var box = ensureBox();
+    box.innerHTML = lines.map(function(row) {
+      return '<div class="bavarium-dev-line bavarium-dev-' + row.kind + '">' +
+        row.text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;") +
+        "</div>";
+    }).join("");
+    box.style.display = lines.length ? "block" : "none";
+  }
+  function report(level, parts) {
+    var message = parts.map(function(p) {
+      try {
+        if (p == null) return "";
+        if (typeof p === "object") return JSON.stringify(p);
+        return String(p);
+      } catch (e) { return String(p); }
+    }).filter(Boolean).join(" ");
+    if (!message) return;
+    var kind = level === "error" ? "error" : "warn";
+    lines.push({
+      text: message.length > 320 ? message.slice(0, 317) + "…" : message,
+      kind: kind,
+    });
+    while (lines.length > MAX) lines.shift();
+    render();
+    try {
+      require("electron").ipcRenderer.sendToHost("bavarium-guest-console-report", {
+        level: kind,
+        message: message,
+      });
+    } catch (e) {}
+    clearTimeout(report._fade);
+    report._fade = setTimeout(function() {
+      lines.length = 0;
+      render();
+    }, 15000);
+  }
+  var origError = console.error;
+  console.error = function() {
+    report("error", Array.prototype.slice.call(arguments));
+    return origError.apply(console, arguments);
+  };
+  var origWarn = console.warn;
+  console.warn = function() {
+    report("warn", Array.prototype.slice.call(arguments));
+    return origWarn.apply(console, arguments);
+  };
+  window.addEventListener("error", function(e) {
+    if (e.target && e.target.tagName) {
+      var tag = String(e.target.tagName).toLowerCase();
+      if (tag === "img" || tag === "script" || tag === "link") {
+        var url = e.target.src || e.target.href || "";
+        if (url) {
+          report("error", ["Failed to load " + tag + ": " + url]);
+          return;
+        }
+      }
+    }
+    if (e.message) report("error", [e.message]);
+  }, true);
+  window.addEventListener("unhandledrejection", function(e) {
+    report("error", [String(e.reason || e)]);
+  });
+  try {
+    var perfObs = new PerformanceObserver(function(list) {
+      list.getEntries().forEach(function(entry) {
+        if (!entry || !entry.name) return;
+        var status = entry.responseStatus;
+        if (typeof status === "number" && status >= 400) {
+          report("error", ["Failed to load " + entry.name + " (" + status + ")"]);
+        }
+      });
+    });
+    perfObs.observe({ type: "resource", buffered: true });
+  } catch (e) {}
 })();`;
 
 /** Notify shell when proxied inner frame URL/title changes (same-origin to proxy shell). */
@@ -155,7 +270,18 @@ const BAVARIUM_PAGE_META_WATCHER = `(function() {
     var rootObs = new MutationObserver(scan);
     rootObs.observe(document.documentElement, { childList: true, subtree: true });
   } catch (e) {}
-  setInterval(ping, 500);
+  function onProxyShell() {
+    try {
+      var h = location.hostname;
+      return h === "localhost" || h === "127.0.0.1";
+    } catch (e) {
+      return false;
+    }
+  }
+  scan();
+  if (onProxyShell()) {
+    setInterval(ping, 500);
+  }
 })();`;
 
 const guestPageMetaTimers = new Map();
@@ -184,6 +310,24 @@ function injectBavariumLinkClickCapture(view) {
   webviewGuestExecuteJavaScript(view, BAVARIUM_SHELL_HTTP_LINK_PATCH, true).catch(
     () => {}
   );
+}
+
+function injectConsoleOverlayCapture(view) {
+  if (!view || getSettings().showDevToolsOnScreenOverlay !== true) return;
+  const reset =
+    'try { window.__bavariumConsoleOverlayPatch = false; } catch (e) {}';
+  webviewGuestExecuteJavaScript(view, reset, true)
+    .then(() =>
+      webviewGuestExecuteJavaScript(view, BAVARIUM_CONSOLE_OVERLAY_PATCH, true)
+    )
+    .catch(() => {});
+}
+
+function injectConsoleOverlayCaptureAllWebviews() {
+  if (getSettings().showDevToolsOnScreenOverlay !== true) return;
+  document.querySelectorAll("webview.tab-webview").forEach((wv) => {
+    injectConsoleOverlayCapture(wv);
+  });
 }
 
 function injectPageMetaWatcher(view) {
@@ -406,6 +550,11 @@ function attachWebviewBavariumNavigation(view) {
     }
     if (e.channel === "bavarium-page-meta-changed") {
       onGuestPageMetaChanged(view);
+      return;
+    }
+    if (e.channel === "bavarium-guest-console-report" && e.args && e.args[0]) {
+      const p = e.args[0];
+      pushDevConsoleOverlayLine(p.message, p.level, { trusted: true });
     }
   });
 }
@@ -760,7 +909,7 @@ function updateSiteInfoIndicatorForTab(te) {
   if (!anchor || !btn || !iconEl || !contentEl) return;
 
   const active =
-    te && currentTab && currentTab.id === te.id && !urlOmniboxUserEditing;
+    te && currentTab && currentTab.id === te.id && !urlBarIsBeingEdited();
   const kind = active ? classifySiteInfoKind(tabDisplayUrlForOmnibox(te)) : null;
 
   if (!kind) {
@@ -785,22 +934,59 @@ function updateSiteInfoIndicatorForTab(te) {
   }
 }
 
+function urlBarIsBeingEdited() {
+  const urlInput = document.getElementById("url");
+  if (!urlInput) return false;
+  if (document.activeElement === urlInput) return true;
+  return urlOmniboxUserEditing;
+}
+
+function installUrlBarListeners() {
+  if (urlBarListenersInstalled) return;
+  const urlInput = document.getElementById("url");
+  if (!urlInput) return;
+  urlBarListenersInstalled = true;
+  const markEditing = () => {
+    urlOmniboxUserEditing = true;
+  };
+  const markNotEditing = () => {
+    urlOmniboxUserEditing = false;
+    if (currentTab) updateSiteInfoIndicatorForTab(currentTab);
+  };
+  urlInput.addEventListener("focus", markEditing);
+  urlInput.addEventListener("blur", markNotEditing);
+  urlInput.addEventListener("input", markEditing);
+  urlInput.addEventListener("compositionstart", markEditing);
+  urlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      urlOmniboxUserEditing = false;
+      go();
+      return;
+    }
+    markEditing();
+  });
+}
+
 function updateUrlBarForTab(te) {
   if (!te || !currentTab || currentTab.id !== te.id) return;
-  if (urlOmniboxUserEditing) return;
+  if (urlBarIsBeingEdited()) return;
   const urlInput = document.getElementById("url");
   if (!urlInput) return;
   const displayUrl = tabDisplayUrlForOmnibox(te);
   if (displayUrl) {
     urlInput.value = displayUrl;
     updateSiteInfoIndicatorForTab(te);
+    updateBookmarkBarVisibility();
     return;
   }
   if (te.view && viewLooksLikeProxyShell(te.view)) {
     updateSiteInfoIndicatorForTab(te);
+    updateBookmarkBarVisibility();
     return;
   }
   updateSiteInfoIndicatorForTab(te);
+  updateBookmarkBarVisibility();
 }
 
 function attachHoldAltMenuListeners(target) {
@@ -1005,7 +1191,7 @@ function refreshStaleProxyTabIfNeeded(te) {
     return false;
   }
 
-  if (currentTab && currentTab.id === te.id) {
+  if (currentTab && currentTab.id === te.id && !urlBarIsBeingEdited()) {
     try {
       const u = new URL(newSrc);
       const urlInput = document.getElementById("url");
@@ -1457,6 +1643,7 @@ function newTab(url = null, options = {}) {
   view.className = "tab-webview";
   attachHoldAltMenuListeners(view);
   attachWebviewBavariumNavigation(view);
+  attachDevConsoleOverlayListener(view);
   view.setAttribute("partition", incognito ? "incognito" : "persist:bavarium");
   view.setAttribute(
     "webpreferences",
@@ -1499,6 +1686,7 @@ function newTab(url = null, options = {}) {
         });
       }
       injectBavariumLinkClickCapture(view);
+      injectConsoleOverlayCapture(view);
       injectPageMetaWatcher(view);
       void injectFrameCapOnWebview(view);
       scheduleGuestTabPageMetaRefresh(view);
@@ -2209,8 +2397,172 @@ function getSettings() {
   ) {
     settings.externalLinkOpenPreference = "ask";
   }
+  if (settings.hideBookmarkBarExceptHomepage === undefined) {
+    settings.hideBookmarkBarExceptHomepage = false;
+  }
+  if (settings.homepageCustomBackground === undefined) {
+    settings.homepageCustomBackground = "";
+  }
+  if (settings.homepageShowTiles === undefined) settings.homepageShowTiles = true;
+  if (settings.homepageShowVersionInfo === undefined) {
+    settings.homepageShowVersionInfo = true;
+  }
+  if (settings.homepageShowSystemInfo === undefined) {
+    settings.homepageShowSystemInfo = true;
+  }
+  if (settings.homepageShowProxyPort === undefined) {
+    settings.homepageShowProxyPort = true;
+  }
+  if (settings.showDevToolsOnScreenOverlay === undefined) {
+    settings.showDevToolsOnScreenOverlay = false;
+  }
 
   return settings;
+}
+
+function urlMatchesConfiguredHomepage(url, settings) {
+  if (!url || typeof url !== "string") return false;
+  const s = settings || getSettings();
+  const hp = s.homepage || "bavarium";
+  if (hp === "bavarium") {
+    if (isBavariumNewTabUrl(url)) return true;
+    return url.includes("newtab.html");
+  }
+  if (hp === "ultraviolet" || hp === "scramjet") {
+    try {
+      const u = new URL(url);
+      const base = new URL(localProxyBaseUrl(s));
+      return u.origin === base.origin;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const u = new URL(url.startsWith("http") ? url : `https://${url}`);
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (hp === "duckduckgo") return host === "duckduckgo.com";
+    return host === "google.com";
+  } catch {
+    return false;
+  }
+}
+
+function tabMatchesConfiguredHomepage(te) {
+  if (!te) return false;
+  let url = "";
+  try {
+    url = tabDisplayUrlForOmnibox(te) || "";
+  } catch (_) {}
+  if (!url && te.view) {
+    try {
+      url = webviewDisplayUrl(te.view) || te.view.getURL() || "";
+    } catch (_) {}
+  }
+  if (!url && te.guestPage && te.guestPage.url) url = te.guestPage.url;
+  return urlMatchesConfiguredHomepage(url, getSettings());
+}
+
+function updateBookmarkBarVisibility() {
+  const bar = document.getElementById("bookmarkbar");
+  if (!bar) return;
+  const s = getSettings();
+  if (s.hideBookmarkBarExceptHomepage !== true) {
+    bar.classList.remove("bookmarkbar-home-hidden");
+    return;
+  }
+  const show = currentTab && tabMatchesConfiguredHomepage(currentTab);
+  bar.classList.toggle("bookmarkbar-home-hidden", !show);
+}
+
+const DEV_CONSOLE_OVERLAY_MAX = 8;
+const devConsoleOverlayLines = [];
+
+function escapeDevOverlayHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function syncDevConsoleOverlayVisibility() {
+  const el = document.getElementById("devConsoleOverlay");
+  if (!el) return;
+  const on = getSettings().showDevToolsOnScreenOverlay === true;
+  el.hidden = !on || devConsoleOverlayLines.length === 0;
+}
+
+function consoleOverlaySeverity(level) {
+  if (typeof level === "number") {
+    if (level >= 3) return "error";
+    if (level >= 2) return "warn";
+    return null;
+  }
+  const s = String(level || "").toLowerCase();
+  if (s === "error") return "error";
+  if (s === "warning" || s === "warn") return "warn";
+  return null;
+}
+
+function pushDevConsoleOverlayLine(message, level, options = {}) {
+  if (
+    !options.trusted &&
+    getSettings().showDevToolsOnScreenOverlay !== true
+  ) {
+    return;
+  }
+  const el = document.getElementById("devConsoleOverlay");
+  if (!el) return;
+  const text = String(message || "").trim();
+  if (!text) return;
+  const severity = consoleOverlaySeverity(level);
+  if (!severity) return;
+  const kind = severity;
+  devConsoleOverlayLines.push({
+    text: text.length > 320 ? `${text.slice(0, 317)}…` : text,
+    kind,
+    at: Date.now(),
+  });
+  while (devConsoleOverlayLines.length > DEV_CONSOLE_OVERLAY_MAX) {
+    devConsoleOverlayLines.shift();
+  }
+  el.innerHTML = devConsoleOverlayLines
+    .map(
+      (row) =>
+        `<div class="dev-console-line dev-console-${row.kind}">${escapeDevOverlayHtml(
+          row.text
+        )}</div>`
+    )
+    .join("");
+  el.hidden = false;
+  window.clearTimeout(pushDevConsoleOverlayLine._fadeTimer);
+  pushDevConsoleOverlayLine._fadeTimer = window.setTimeout(() => {
+    devConsoleOverlayLines.length = 0;
+    syncDevConsoleOverlayVisibility();
+  }, 12000);
+}
+
+function attachDevConsoleOverlayListener(view) {
+  if (!view || view.__bavariumDevConsoleOverlay) return;
+  view.__bavariumDevConsoleOverlay = true;
+  view.addEventListener("console-message", (e) => {
+    const msg =
+      (e && e.message) ||
+      (e && e.detail && e.detail.message) ||
+      "";
+    const level =
+      e && e.level !== undefined
+        ? e.level
+        : e && e.detail && e.detail.level;
+    pushDevConsoleOverlayLine(msg, level);
+  });
+}
+
+function handleGuestConsoleMessagePayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+  pushDevConsoleOverlayLine(payload.message, payload.level, {
+    trusted: true,
+  });
 }
 
 function shouldRecordHistoryUrl(url) {
@@ -2982,12 +3334,12 @@ async function refresh() {
       } catch (_) {}
     }
     scheduleGuestTabPageMetaRefresh(te.view);
-    if (currentTab && currentTab.id === te.id) {
+    if (currentTab && currentTab.id === te.id && !urlBarIsBeingEdited()) {
       try {
         const u = new URL(newSrc);
         if (u.searchParams.has("url")) {
           const inner = normalizeRemoteUrl(
-            decodeURIComponent(u.get("url"))
+            decodeURIComponent(u.searchParams.get("url"))
           );
           const urlInput = document.getElementById("url");
           if (urlInput && inner) urlInput.value = inner;
@@ -3237,7 +3589,9 @@ function closeDownloadsShelf() {
 
 function closeToolbarMenu() {
   const menu = document.getElementById("menu");
+  const btn = document.getElementById("btnToolbarMenu");
   if (menu) menu.style.display = "none";
+  if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
 async function refreshDownloadsShelf() {
@@ -3345,11 +3699,36 @@ function openDownloadManagerFromShelf() {
 }
 
 function toggleMenu() {
+  installToolbarMenu();
   closeDownloadsShelf();
   closeZoomPopover();
   const menu = document.getElementById("menu");
+  const btn = document.getElementById("btnToolbarMenu");
   if (!menu) return;
-  menu.style.display = menu.style.display === "block" ? "none" : "block";
+  const opening = menu.style.display !== "block";
+  menu.style.display = opening ? "block" : "none";
+  if (btn) btn.setAttribute("aria-expanded", opening ? "true" : "false");
+}
+
+function installToolbarMenu() {
+  if (toolbarMenuInstalled) return;
+  const menuEl = document.getElementById("menu");
+  if (!menuEl) return;
+  toolbarMenuInstalled = true;
+  const menuBtn = document.getElementById("btnToolbarMenu");
+  if (menuBtn) {
+    menuBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMenu();
+    });
+  }
+  menuEl.addEventListener("click", (e) => {
+    const item = e.target.closest("[data-menu-action]");
+    if (!item || item.classList.contains("disabled")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handleToolbarMenuAction(item.dataset.menuAction);
+  });
 }
 
 function getShareablePageUrl() {
@@ -3632,13 +4011,13 @@ function handleToolbarMenuAction(action) {
 // close menu when clicking outside
 document.addEventListener("click", (e) => {
   const menu = document.getElementById("menu");
-  if (!menu) return;
+  if (!menu || menu.style.display !== "block") return;
 
   if (
     !e.target.closest("#menu") &&
     !e.target.closest("#btnToolbarMenu")
   ) {
-    menu.style.display = "none";
+    closeToolbarMenu();
   }
 });
 
@@ -3682,10 +4061,31 @@ function applySettingsPayload(settings) {
       settings.externalLinkOpenPreference === "bavarium"
         ? settings.externalLinkOpenPreference
         : "ask",
+    hideBookmarkBarExceptHomepage: settings.hideBookmarkBarExceptHomepage === true,
+    homepageCustomBackground: settings.homepageCustomBackground || "",
+    homepageShowTiles: settings.homepageShowTiles !== false,
+    homepageShowVersionInfo: settings.homepageShowVersionInfo !== false,
+    homepageShowSystemInfo: settings.homepageShowSystemInfo !== false,
+    homepageShowProxyPort: settings.homepageShowProxyPort !== false,
+    showDevToolsOnScreenOverlay: settings.showDevToolsOnScreenOverlay === true,
   };
   localStorage.setItem("settings", JSON.stringify(merged));
   syncDeveloperUiFromSettings(merged);
   applyFrameRateCapToAllWebviews();
+  updateBookmarkBarVisibility();
+  syncDevConsoleOverlayVisibility();
+  injectConsoleOverlayCaptureAllWebviews();
+  refreshNewtabWebviews();
+}
+
+function refreshNewtabWebviews() {
+  document.querySelectorAll("webview").forEach((wv) => {
+    const src = wv.getAttribute("src") || "";
+    if (!src.includes("newtab.html")) return;
+    wv.executeJavaScript(
+      "window.__bavariumRefreshNewtab && window.__bavariumRefreshNewtab()"
+    ).catch(() => {});
+  });
 }
 
 let frameRateCapState = {
@@ -3718,12 +4118,15 @@ function onPerfGraphIntervalGap() {
   lastTabFps = null;
   perfTabPollTick = 5;
   const te = currentTab;
-  if (!te || !te.guestWebContentsId) return;
-  ipcRenderer
-    .invoke("bavarium-reset-tab-fps-poll", {
-      webContentsId: te.guestWebContentsId,
-    })
-    .catch(() => {});
+  if (!te || !te.view) return;
+  void guestWebContentsIdForTab(te).then((id) => {
+    if (!id) return;
+    ipcRenderer
+      .invoke("bavarium-reset-tab-fps-poll", {
+        webContentsId: id,
+      })
+      .catch(() => {});
+  });
 }
 
 function normalizeFpsLimitSetting(raw) {
@@ -3859,21 +4262,35 @@ function stopPerformanceGraph() {
 function scheduleTabFpsPoll(expectedSeq) {
   const pollSeq = expectedSeq != null ? expectedSeq : tabFpsPollSeq;
   const te = currentTab;
-  if (!te || !te.guestWebContentsId) {
+  if (!te || !te.view) {
     if (pollSeq === tabFpsPollSeq) lastTabFps = null;
     return;
   }
-  const id = te.guestWebContentsId;
-  ipcRenderer
-    .invoke("bavarium-poll-tab-fps", { webContentsId: id })
-    .then((r) => {
-      if (pollSeq !== tabFpsPollSeq) return;
-      if (!currentTab || currentTab.guestWebContentsId !== id) return;
-      if (r && r.ok && r.fps != null && Number.isFinite(r.fps) && r.fps > 0) {
-        lastTabFps = clampPerfFps(r.fps);
-      }
-    })
-    .catch(() => {});
+  const pollWithId = (id) => {
+    if (!Number.isFinite(id)) {
+      if (pollSeq === tabFpsPollSeq) lastTabFps = null;
+      return;
+    }
+    ipcRenderer
+      .invoke("bavarium-poll-tab-fps", { webContentsId: id })
+      .then((r) => {
+        if (pollSeq !== tabFpsPollSeq) return;
+        if (!currentTab || currentTab.view !== te.view) return;
+        if (r && r.ok && r.fps != null && Number.isFinite(r.fps) && r.fps > 0) {
+          lastTabFps = clampPerfFps(r.fps);
+        }
+      })
+      .catch(() => {});
+  };
+  if (te.guestWebContentsId) {
+    pollWithId(te.guestWebContentsId);
+    return;
+  }
+  void guestWebContentsIdForTab(te).then((id) => {
+    if (pollSeq !== tabFpsPollSeq) return;
+    if (id) pollWithId(id);
+    else if (pollSeq === tabFpsPollSeq) lastTabFps = null;
+  });
 }
 
 function perfGraphLoop(lastTs) {
@@ -3994,6 +4411,215 @@ function syncDeveloperUiFromSettings(settings) {
   else stopPerformanceGraph();
 }
 
+let startupShellFinished = false;
+let startupShellDeferred = false;
+let startupProxyPollTimer = null;
+let startupIpcInstalled = false;
+let shellSettingsIpcInstalled = false;
+
+function proxyLabelFromType(proxyType) {
+  return proxyType === "scramjet" ? "Scramjet" : "Ultraviolet";
+}
+
+function updateStartupSplashStatus(message) {
+  const el = document.getElementById("startupSplashStatus");
+  if (el && message) el.textContent = message;
+}
+
+function dismissStartupSplash() {
+  const splash = document.getElementById("startupSplash");
+  if (!splash || splash.hidden) return;
+  splash.classList.add("splash-fade-out");
+  splash.setAttribute("aria-busy", "false");
+  document.body.classList.remove("startup-loading");
+  window.setTimeout(() => {
+    splash.hidden = true;
+  }, 280);
+}
+
+function finishStartupShell() {
+  if (startupShellFinished) return;
+  startupShellFinished = true;
+  startupShellDeferred = false;
+  stopStartupProxyPoll();
+  dismissStartupSplash();
+  if (pendingBootstrapTab) {
+    const p = pendingBootstrapTab;
+    pendingBootstrapTab = null;
+    if (tabs.length > 0) stripAllTabsSilently();
+    bootstrapShellWithFirstTab(p);
+  } else if (tabs.length === 0) {
+    newTab();
+  }
+}
+
+function handleProxyPortStateForStartup(state) {
+  if (!state || typeof state !== "object") return;
+  if (state.settings) applySettingsPayload(state.settings);
+
+  if (startupShellFinished) return;
+
+  const status = state.status || "";
+  if (
+    state.ready === true ||
+    status === "running" ||
+    status === "relocated"
+  ) {
+    finishStartupShell();
+    return;
+  }
+  if (status === "disabled") {
+    finishStartupShell();
+    return;
+  }
+  if (status === "failed") {
+    updateStartupSplashStatus(
+      state.message || "Proxy failed to start. Opening browser anyway…"
+    );
+    window.setTimeout(() => finishStartupShell(), 600);
+    return;
+  }
+  if (status === "starting" || !status) {
+    const label = proxyLabelFromType(state.proxyType);
+    updateStartupSplashStatus(state.message || `Starting ${label} proxy…`);
+  }
+}
+
+function stopStartupProxyPoll() {
+  if (startupProxyPollTimer) {
+    clearInterval(startupProxyPollTimer);
+    startupProxyPollTimer = null;
+  }
+}
+
+function scheduleStartupProxyPoll() {
+  if (startupProxyPollTimer || startupShellFinished) return;
+  startupProxyPollTimer = window.setInterval(() => {
+    if (startupShellFinished) {
+      stopStartupProxyPoll();
+      return;
+    }
+    void ipcRenderer
+      .invoke("get-proxy-startup-state")
+      .then((state) => {
+        if (!state || startupShellFinished) return;
+        handleProxyPortStateForStartup({
+          ...state,
+          settings: getSettings(),
+        });
+        if (startupShellFinished) stopStartupProxyPoll();
+      })
+      .catch(() => {});
+  }, 500);
+}
+
+function scheduleStartupWatchdog() {
+  window.setTimeout(() => {
+    if (!startupShellFinished) {
+      console.warn(
+        "Startup watchdog: opening browser without waiting for proxy."
+      );
+      finishStartupShell();
+    }
+  }, 12000);
+}
+
+function onProxyPortStateMessage(state) {
+  if (!state || typeof state !== "object") return;
+  if (!startupShellFinished) {
+    handleProxyPortStateForStartup(state);
+    return;
+  }
+  if (state.settings) applySettingsPayload(state.settings);
+}
+
+function installStartupIpcEarly() {
+  if (startupIpcInstalled) return;
+  startupIpcInstalled = true;
+  ipcRenderer.on("proxy-port-state", (_e, state) => {
+    onProxyPortStateMessage(state);
+  });
+}
+
+function installShellSettingsIpcEarly() {
+  if (shellSettingsIpcInstalled) return;
+  shellSettingsIpcInstalled = true;
+  ipcRenderer.on("bavarium-frame-rate-settings", (_e, state) => {
+    if (state && typeof state === "object") {
+      frameRateCapState = state;
+      applyFrameRateCapToAllWebviews();
+    }
+  });
+  ipcRenderer.on("settings-updated", (_e, settings) => {
+    applySettingsPayload(settings || undefined);
+    if (currentTab) {
+      refreshStaleProxyTabIfNeeded(currentTab);
+      updateSiteInfoIndicatorForTab(currentTab);
+    }
+    document.querySelectorAll("webview").forEach((wv) => {
+      const src = wv.getAttribute("src") || "";
+      if (src.includes("settings.html")) {
+        wv.executeJavaScript(
+          "window.__bavariumRefreshHistory && window.__bavariumRefreshHistory()"
+        ).catch(() => {});
+        wv.executeJavaScript(
+          "window.__bavariumRefreshDeveloper && window.__bavariumRefreshDeveloper()"
+        ).catch(() => {});
+      }
+    });
+  });
+  void ipcRenderer
+    .invoke("get-settings")
+    .then((fileSettings) => {
+      if (fileSettings) applySettingsPayload(fileSettings);
+    })
+    .catch(() => {});
+  void ipcRenderer
+    .invoke("get-frame-rate-settings")
+    .then((fr) => {
+      if (fr) frameRateCapState = fr;
+    })
+    .catch(() => {});
+}
+
+function bootstrapStartupShell() {
+  installStartupIpcEarly();
+  installShellSettingsIpcEarly();
+  installUrlBarListeners();
+  installToolbarMenu();
+  ipcRenderer.send("bavarium-shell-ready");
+  beginStartupShell();
+  scheduleStartupWatchdog();
+}
+
+function beginStartupShell() {
+  const settings = getSettings();
+
+  if (settings.proxyEnabled === false) {
+    updateStartupSplashStatus("Proxy is disabled.");
+    finishStartupShell();
+    return;
+  }
+
+  startupShellDeferred = true;
+  const label = proxyLabelFromType(settings.proxyType);
+  updateStartupSplashStatus(`Starting ${label} proxy…`);
+
+  void ipcRenderer
+    .invoke("get-proxy-startup-state")
+    .then((state) => {
+      handleProxyPortStateForStartup({
+        ...(state || {}),
+        settings,
+      });
+      if (!startupShellFinished) scheduleStartupProxyPoll();
+    })
+    .catch(() => {
+      updateStartupSplashStatus(`Starting ${label} proxy…`);
+      scheduleStartupProxyPoll();
+    });
+}
+
 window.onload = async () => {
   attachHoldAltMenuListeners(window);
   attachHoldAltMenuListeners(document);
@@ -4020,21 +4646,19 @@ window.onload = async () => {
     } catch (_) {}
   } catch (e) {
     console.warn("get-settings failed:", e);
+    syncDeveloperUiFromSettings(getSettings());
   }
 
   initTabStripContainer();
   initDevToolsHost();
 
-  if (pendingBootstrapTab) {
-    const p = pendingBootstrapTab;
-    pendingBootstrapTab = null;
-    if (tabs.length > 0) stripAllTabsSilently();
-    bootstrapShellWithFirstTab(p);
-  } else if (tabs.length === 0) {
-    newTab();
-  }
+  document.querySelectorAll("webview").forEach((wv) => {
+    attachDevConsoleOverlayListener(wv);
+    injectConsoleOverlayCapture(wv);
+  });
 
   renderBookmarkBar();
+  updateBookmarkBarVisibility();
 
   const btnAddBm = document.getElementById("btnAddBookmark");
   if (btnAddBm) {
@@ -4191,26 +4815,7 @@ window.onload = async () => {
     }
   });
 
-  const urlInput = document.getElementById("url");
-  if (urlInput) {
-    urlInput.addEventListener("focus", () => {
-      urlOmniboxUserEditing = true;
-    });
-    urlInput.addEventListener("blur", () => {
-      urlOmniboxUserEditing = false;
-      if (currentTab) updateSiteInfoIndicatorForTab(currentTab);
-    });
-    urlInput.addEventListener("input", () => {
-      urlOmniboxUserEditing = true;
-    });
-    urlInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        urlOmniboxUserEditing = false;
-        go();
-      }
-    });
-  }
+  installUrlBarListeners();
 
   ipcRenderer.on("bavarium-menu-action", (_e, action) => {
     if (typeof action !== "string") return;
@@ -4281,6 +4886,10 @@ window.onload = async () => {
       default:
         break;
     }
+  });
+
+  ipcRenderer.on("bavarium-guest-console-message", (_e, payload) => {
+    handleGuestConsoleMessagePayload(payload);
   });
 
   ipcRenderer.on("bavarium-devtools-hotkey", async (_e, payload) => {
@@ -4529,31 +5138,7 @@ window.onload = async () => {
   if (findNext) findNext.addEventListener("click", () => findInPageNext(true));
   if (findClose) findClose.addEventListener("click", () => closeFindInPage());
 
-  ipcRenderer.on("bavarium-frame-rate-settings", (_e, state) => {
-    if (state && typeof state === "object") {
-      frameRateCapState = state;
-      applyFrameRateCapToAllWebviews();
-    }
-  });
-
-  ipcRenderer.on("settings-updated", (_e, settings) => {
-    applySettingsPayload(settings || undefined);
-    if (currentTab) {
-      refreshStaleProxyTabIfNeeded(currentTab);
-      updateSiteInfoIndicatorForTab(currentTab);
-    }
-    document.querySelectorAll("webview").forEach((wv) => {
-      const src = wv.getAttribute("src") || "";
-      if (src.includes("settings.html")) {
-        wv.executeJavaScript(
-          "window.__bavariumRefreshHistory && window.__bavariumRefreshHistory()"
-        ).catch(() => {});
-        wv.executeJavaScript(
-          "window.__bavariumRefreshDeveloper && window.__bavariumRefreshDeveloper()"
-        ).catch(() => {});
-      }
-    });
-  });
+  installShellSettingsIpcEarly();
 
   ipcRenderer.on("downloads-updated", () => {
     void refreshDownloadsShelf();
@@ -4588,12 +5173,6 @@ window.onload = async () => {
     });
   });
 
-  ipcRenderer.on("proxy-port-state", (_e, state) => {
-    if (state && state.settings) {
-      applySettingsPayload(state.settings);
-    }
-  });
-
   ipcRenderer.on("proxy-switched", () => {
     tabs.forEach((t) => refreshStaleProxyTabIfNeeded(t));
     if (currentTab) {
@@ -4602,15 +5181,7 @@ window.onload = async () => {
     }
   });
 
-  const menuEl = document.getElementById("menu");
-  if (menuEl) {
-    menuEl.addEventListener("click", (e) => {
-      const item = e.target.closest("[data-menu-action]");
-      if (!item || item.classList.contains("disabled")) return;
-      e.stopPropagation();
-      handleToolbarMenuAction(item.dataset.menuAction);
-    });
-  }
+  installToolbarMenu();
 
   const bmMgrModal = document.getElementById("bookmarkManagerModal");
   const bmMgrAdd = document.getElementById("bookmarkManagerAdd");
@@ -4627,4 +5198,13 @@ window.onload = async () => {
       if (e.target === bmMgrModal) closeBookmarkManager();
     });
   }
+
 };
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootstrapStartupShell, {
+    once: true,
+  });
+} else {
+  bootstrapStartupShell();
+}
